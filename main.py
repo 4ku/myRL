@@ -1,7 +1,8 @@
 import os
 import random
 import time
-from dataclasses import dataclass
+import importlib
+from typing import Any
 
 import gymnasium as gym
 import jax
@@ -9,60 +10,23 @@ import numpy as np
 import optax
 import tyro
 from torch.utils.tensorboard import SummaryWriter
-# from jaxrl.agents.data.replay_buffer import ReplayBuffer
-from jaxrl.agents.discrete.dqn import DQN
-import yaml
 from stable_baselines3.common.buffers import ReplayBuffer
 import jax.numpy as jnp
-from flax.core import FrozenDict
 
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
-    seed: int = 1
-    """seed of the experiment"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
-    capture_video: bool = True
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
-
-    # Algorithm specific arguments
-    env_id: str = "CartPole-v1"
-    """the id of the environment"""
-    total_timesteps: int = 100_000
-    """total timesteps of the experiments"""
-    learning_rate: float = 5e-4
-    """the learning rate of the optimizer"""
-    buffer_size: int = 100000
-    """the replay memory buffer size"""
-    batch_size: int = 256
-    """the batch size of sample from the reply memory"""
-    start_e: float = 1
-    """the starting epsilon for exploration"""
-    end_e: float = 0.01
-    """the ending epsilon for exploration"""
-    exploration_fraction: float = 0.5
-    """the fraction of `total-timesteps` it takes from start-e to go end-e"""
-    learning_starts: int = 257
-    """timestep to start learning"""
-    train_frequency: int = 1
-    """the frequency of training"""
-
-    # Agent specific arguments
-    agent_name: str = "dqn"
-    """the name of the agent"""
-    agent_config_path: str = "configs/agents/discrete/dqn/default.yaml"
-    """the path to the agent config"""
+# Import our universal config system
+from configs.config import get_config, get_predefined_config, ALGORITHMS, PREDEFINED_CONFIGS
 
 
-def load_yaml(path: str) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+def load_agent_class(module_path: str, class_name: str):
+    """Dynamically load an agent class from a module path."""
+    try:
+        module = importlib.import_module(module_path)
+        agent_class = getattr(module, class_name)
+        return agent_class
+    except ImportError as e:
+        raise ImportError(f"Could not import module '{module_path}': {e}")
+    except AttributeError as e:
+        raise AttributeError(f"Class '{class_name}' not found in module '{module_path}': {e}")
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -74,9 +38,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
-
         return env
-
     return thunk
 
 
@@ -85,16 +47,15 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-def record_video(agent, env_id, video_folder, episodes=5):
-    # create environment for recording with RGB array rendering
+def record_video(agent, env_id, video_folder, episodes=5, seed=1):
+    """Record video of agent performance."""
     env_vid = gym.make(env_id, render_mode="rgb_array")
     env_vid = gym.wrappers.RecordVideo(
         env_vid, video_folder=video_folder, episode_trigger=lambda _: True
     )
     rewards = []
     for ep in range(episodes):
-        # reset environment
-        reset_out = env_vid.reset(seed=args.seed)
+        reset_out = env_vid.reset(seed=seed)
         if isinstance(reset_out, tuple):
             obs, _ = reset_out
         else:
@@ -103,7 +64,6 @@ def record_video(agent, env_id, video_folder, episodes=5):
         truncated = False
         ep_reward = 0.0
         while not (done or truncated):
-            # select action using trained Q-network
             action = agent.sample_actions(obs)
             action = jax.device_get(action)
             step_out = env_vid.step(action)
@@ -119,61 +79,101 @@ def record_video(agent, env_id, video_folder, episodes=5):
     avg_reward = np.mean(rewards)
     return avg_reward
 
-if __name__ == "__main__":
-    args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
 
+def run_experiment(config_name: str = None, algorithm: str = "dqn", **config_overrides):
+    """
+    Run a reinforcement learning experiment.
+    
+    Args:
+        config_name: Name of predefined config to use (e.g., "dqn_cartpole")
+        algorithm: Algorithm to use if config_name is not provided
+        **config_overrides: Any configuration parameters to override
+    """
+    # Load configuration
+    if config_name:
+        if config_name not in PREDEFINED_CONFIGS:
+            print(f"Available predefined configs: {list(PREDEFINED_CONFIGS.keys())}")
+            raise ValueError(f"Config '{config_name}' not found")
+        config = get_predefined_config(config_name)
+    else:
+        if algorithm not in ALGORITHMS:
+            print(f"Available algorithms: {list(ALGORITHMS.keys())}")
+            raise ValueError(f"Algorithm '{algorithm}' not found")
+        config = get_config(algorithm)
+    
+    # Apply any overrides
+    for key, value in config_overrides.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+        elif hasattr(config.agent, key):
+            setattr(config.agent, key, value)
+        elif key in config.agent.hyperparameters:
+            config.agent.hyperparameters[key] = value
+        else:
+            config.agent.hyperparameters[key] = value
+    
+    # Create run name
+    run_name = f"{config.env_id}__{config.agent.name}__{config.exp_name}__{config.seed}__{int(time.time())}"
+    
+    print(f"Running experiment: {run_name}")
+    print(f"Algorithm: {config.agent.name}")
+    print(f"Environment: {config.env_id}")
+    print(f"Hyperparameters: {config.agent.hyperparameters}")
+    
+    # Setup tracking
+    if config.track:
+        import wandb
         wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
+            project=config.wandb_project_name,
+            entity=config.wandb_entity,
             sync_tensorboard=True,
-            config=vars(args),
+            config={
+                **vars(config),
+                **config.agent.hyperparameters,
+                "algorithm": config.agent.name,
+            },
             name=run_name,
             monitor_gym=True,
             save_code=True,
         )
+    
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s"
-        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        % ("\n".join([f"|{key}|{value}|" for key, value in {
+            **vars(config),
+            **config.agent.hyperparameters,
+        }.items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    key = jax.random.PRNGKey(args.seed)
+    # Seeding
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    key = jax.random.PRNGKey(config.seed)
 
-    # env setup
+    # Environment setup
     envs = gym.vector.SyncVectorEnv(
-        [
-            make_env(args.env_id, args.seed, 0, args.capture_video, run_name)
-        ],
+        [make_env(config.env_id, config.seed, 0, config.capture_video, run_name)],
         autoreset_mode="SameStep",
     )
     assert isinstance(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    with open(args.agent_config_path, "r") as f:
-        agent_config = yaml.safe_load(f)
-
-    agent = DQN.create(
+    # Dynamically load and create agent
+    agent_class = load_agent_class(config.agent.module_path, config.agent.class_name)
+    agent = agent_class.create(
         rng=key,
         observation=envs.single_observation_space.sample(),
         action_dim=envs.single_action_space.n,
-        optimizer=optax.adam(learning_rate=args.learning_rate),
-        **agent_config,
+        optimizer=optax.adam(learning_rate=config.learning_rate),
+        **config.agent.hyperparameters,
     )
 
-    # replay_buffer = ReplayBuffer(
-    #     capacity=args.buffer_size,
-    #     obs_shape=envs.single_observation_space.shape,
-    # )
+    # Replay buffer
     replay_buffer = ReplayBuffer(
-        args.buffer_size,
+        config.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         "cpu",
@@ -182,14 +182,14 @@ if __name__ == "__main__":
 
     start_time = None
 
-    # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
+    # Training loop
+    obs, _ = envs.reset(seed=config.seed)
+    for global_step in range(config.total_timesteps):
+        # Epsilon-greedy exploration (if applicable)
         epsilon = linear_schedule(
-            args.start_e,
-            args.end_e,
-            args.exploration_fraction * args.total_timesteps,
+            config.start_e,
+            config.end_e,
+            config.exploration_fraction * config.total_timesteps,
             global_step,
         )
         if random.random() < epsilon:
@@ -200,10 +200,10 @@ if __name__ == "__main__":
             actions = agent.sample_actions(obs)
             actions = jax.device_get(actions)
 
-        # TRY NOT TO MODIFY: execute the game and log data.
+        # Execute environment step
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
+        # Log episode returns
         if "_final_info" in infos:
             finfo = infos["final_info"]
             mask = infos["_final_info"]
@@ -213,38 +213,25 @@ if __name__ == "__main__":
                 if done_flag:
                     r = returns[idx]
                     l = lengths[idx]
-                    # print(f"global_step={global_step}, episodic_return={r:.2f}")
                     writer.add_scalar("charts/episodic_return", r, global_step)
                     writer.add_scalar("charts/episodic_length", l, global_step)
 
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_obs`
+        # Store transition in replay buffer
         real_next_obs = next_obs.copy()
         if "final_obs" in infos:
             for idx, trunc in enumerate(truncations):
                 if trunc:
                     real_next_obs[idx] = infos["final_obs"][idx]
-        # replay_buffer.add(obs, actions, rewards, real_next_obs, terminations)
         replay_buffer.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
-        # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
+        # Training
+        if global_step > config.learning_starts:
             if start_time is None:
                 start_time = time.time()
-            # with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
-            if global_step % args.train_frequency == 0:
-                # key, subkey = jax.random.split(key)
-                # data = replay_buffer.sample(args.batch_size, key)
-                data = replay_buffer.sample(args.batch_size)
-                # data = FrozenDict({
-                #     "observations": jnp.array(data.observations),
-                #     "actions": jnp.array(data.actions),
-                #     "next_observations": jnp.array(data.next_observations),
-                #     "rewards": jnp.array(data.rewards),
-                #     "dones": jnp.array(data.dones),
-                # })
+            
+            if global_step % config.train_frequency == 0:
+                data = replay_buffer.sample(config.batch_size)
                 data = {
                     "observations": data.observations.numpy(),
                     "actions": data.actions.flatten().numpy(),
@@ -255,40 +242,82 @@ if __name__ == "__main__":
                 agent, info = agent.update(data)
 
                 if global_step % 100 == 0:
-                    writer.add_scalar(
-                        "losses/td_loss", jax.device_get(info["loss"]), global_step
-                    )
-                    writer.add_scalar(
-                        "losses/q_values", jax.device_get(info["q_pred"]).mean(), global_step
-                    )
+                    writer.add_scalar("losses/td_loss", jax.device_get(info["loss"]), global_step)
+                    writer.add_scalar("losses/q_values", jax.device_get(info["q_pred"]).mean(), global_step)
                     writer.add_scalar(
                         "charts/SPS",
-                        int((global_step - args.learning_starts) / (time.time() - start_time)),
+                        int((global_step - config.learning_starts) / (time.time() - start_time)),
                         global_step,
                     )
+                
                 if global_step % 1000 == 0 and global_step > 0:
-                    print("Global step:", global_step)
-                    print("Loss:", jax.device_get(info["loss"]))
-                    print("Q-values:", jax.device_get(info["q_pred"]).mean())
-                    print("SPS:", int((global_step - args.learning_starts) / (time.time() - start_time)))
+                    print(f"Global step: {global_step}")
+                    print(f"Loss: {jax.device_get(info['loss'])}")
+                    print(f"Q-values: {jax.device_get(info['q_pred']).mean()}")
+                    print(f"SPS: {int((global_step - config.learning_starts) / (time.time() - start_time))}")
                     print("--------------------------------")
-                # if global_step % 5000 == 0:
-                #     avg_r = record_video(
-                #         agent,
-                #         args.env_id,
-                #         video_folder=f"videos/step_{global_step}",
-                #         episodes=5,
-                #     )
-                #     print(f"Average reward: {avg_r:.2f}")
 
     envs.close()
     writer.close()
 
-    # Run evaluation and record video
+    # Final evaluation
     avg_r = record_video(
         agent,
-        args.env_id,
-        video_folder=f"videos/step_{args.total_timesteps}",
+        config.env_id,
+        video_folder=f"videos/step_{config.total_timesteps}",
         episodes=5,
+        seed=config.seed,
     )
     print(f"Average reward: {avg_r:.2f}")
+    
+    return agent, avg_r
+
+
+if __name__ == "__main__":
+    # Define command line interface
+    def main(
+        config_name: str = None,
+        algorithm: str = "dqn", 
+        env_id: str = None,
+        total_timesteps: int = None,
+        learning_rate: float = None,
+        batch_size: int = None,
+        seed: int = None,
+        track: bool = False,
+        capture_video: bool = True,
+    ):
+        """
+        Universal RL training script.
+        
+        Args:
+            config_name: Use a predefined config (e.g., 'dqn_cartpole', 'dqn_atari')
+            algorithm: Algorithm to use if config_name not provided
+            env_id: Environment ID (overrides config)
+            total_timesteps: Total training timesteps (overrides config)
+            learning_rate: Learning rate (overrides config)
+            batch_size: Batch size (overrides config)
+            seed: Random seed (overrides config)
+            track: Enable wandb tracking
+            capture_video: Capture training videos
+        """
+        # Collect overrides
+        overrides = {}
+        if env_id is not None:
+            overrides['env_id'] = env_id
+        if total_timesteps is not None:
+            overrides['total_timesteps'] = total_timesteps
+        if learning_rate is not None:
+            overrides['learning_rate'] = learning_rate
+        if batch_size is not None:
+            overrides['batch_size'] = batch_size
+        if seed is not None:
+            overrides['seed'] = seed
+        if track:
+            overrides['track'] = track
+        if not capture_video:
+            overrides['capture_video'] = capture_video
+        
+        # Run experiment
+        run_experiment(config_name=config_name, algorithm=algorithm, **overrides)
+
+    tyro.cli(main)
