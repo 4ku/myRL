@@ -39,6 +39,11 @@ class ExperimentConfig:
     end_e: float = 0.01
     exploration_fraction: float = 0.5
     
+    # Evaluation
+    eval_every: int = 10_000  # Evaluate every N timesteps
+    eval_episodes: int = 5    # Number of episodes to run for evaluation
+    eval_deterministic: bool = True  # Use deterministic actions during evaluation
+    
     # Agent configuration
     agent: AgentConfig = None
 

@@ -80,6 +80,57 @@ def record_video(agent, env_id, video_folder, episodes=5, seed=1):
     return avg_reward
 
 
+def evaluate_agent(agent, env_id, n_episodes=5, seed=1, deterministic=True):
+    """Evaluate agent performance without recording video."""
+    env_eval = gym.make(env_id)
+    rewards = []
+    lengths = []
+    
+    for ep in range(n_episodes):
+        reset_out = env_eval.reset(seed=seed + ep)  # Different seed for each episode
+        if isinstance(reset_out, tuple):
+            obs, _ = reset_out
+        else:
+            obs = reset_out
+        done = False
+        truncated = False
+        ep_reward = 0.0
+        ep_length = 0
+        
+        while not (done or truncated):
+            if deterministic:
+                # Use deterministic action selection for evaluation
+                action = agent.sample_actions(obs)
+                action = jax.device_get(action)
+            else:
+                # Use stochastic action selection
+                action = agent.sample_actions(obs)
+                action = jax.device_get(action)
+            
+            step_out = env_eval.step(action)
+            if len(step_out) == 5:
+                obs, r, term, trunc, _ = step_out
+                done = term
+                truncated = trunc
+            else:
+                obs, r, done, _ = step_out
+            ep_reward += r
+            ep_length += 1
+            
+        rewards.append(ep_reward)
+        lengths.append(ep_length)
+    
+    env_eval.close()
+    return {
+        'mean_reward': np.mean(rewards),
+        'std_reward': np.std(rewards),
+        'mean_length': np.mean(lengths),
+        'std_length': np.std(lengths),
+        'rewards': rewards,
+        'lengths': lengths
+    }
+
+
 def run_experiment(config_name: str = None, algorithm: str = "dqn", **config_overrides):
     """
     Run a reinforcement learning experiment.
@@ -215,6 +266,7 @@ def run_experiment(config_name: str = None, algorithm: str = "dqn", **config_ove
                     l = lengths[idx]
                     writer.add_scalar("charts/episodic_return", r, global_step)
                     writer.add_scalar("charts/episodic_length", l, global_step)
+                    print(f"Episode {global_step} reward: {r}, length: {l}")
 
         # Store transition in replay buffer
         real_next_obs = next_obs.copy()
@@ -257,18 +309,70 @@ def run_experiment(config_name: str = None, algorithm: str = "dqn", **config_ove
                     print(f"SPS: {int((global_step - config.learning_starts) / (time.time() - start_time))}")
                     print("--------------------------------")
 
+        # Periodic evaluation
+        if (global_step > config.learning_starts and 
+            global_step % config.eval_every == 0 and 
+            global_step > 0):
+            
+            eval_results = evaluate_agent(
+                agent, 
+                config.env_id, 
+                n_episodes=config.eval_episodes, 
+                seed=config.seed + 1000,  # Different seed for evaluation
+                deterministic=config.eval_deterministic
+            )
+            
+            # Log evaluation results
+            writer.add_scalar("eval/mean_reward", eval_results['mean_reward'], global_step)
+            writer.add_scalar("eval/std_reward", eval_results['std_reward'], global_step)
+            writer.add_scalar("eval/mean_length", eval_results['mean_length'], global_step)
+            
+            print(f"Evaluation at step {global_step}:")
+            print(f"  Mean reward: {eval_results['mean_reward']:.2f} ± {eval_results['std_reward']:.2f}")
+            print(f"  Mean length: {eval_results['mean_length']:.1f} ± {eval_results['std_length']:.1f}")
+            print("--------------------------------")
+
     envs.close()
     writer.close()
 
     # Final evaluation
-    avg_r = record_video(
-        agent,
-        config.env_id,
-        video_folder=f"videos/step_{config.total_timesteps}",
-        episodes=5,
-        seed=config.seed,
-    )
-    print(f"Average reward: {avg_r:.2f}")
+    if config.capture_video:
+        avg_r = record_video(
+            agent,
+            config.env_id,
+            video_folder=f"videos/step_{config.total_timesteps}",
+            episodes=5,
+            seed=config.seed,
+        )
+        print(f"Average reward: {avg_r:.2f}")
+    else:
+        # Quick evaluation without video
+        env_eval = gym.make(config.env_id)
+        rewards = []
+        for ep in range(5):
+            reset_out = env_eval.reset(seed=config.seed)
+            if isinstance(reset_out, tuple):
+                obs, _ = reset_out
+            else:
+                obs = reset_out
+            done = False
+            truncated = False
+            ep_reward = 0.0
+            while not (done or truncated):
+                action = agent.sample_actions(obs)
+                action = jax.device_get(action)
+                step_out = env_eval.step(action)
+                if len(step_out) == 5:
+                    obs, r, term, trunc, _ = step_out
+                    done = term
+                    truncated = trunc
+                else:
+                    obs, r, done, _ = step_out
+                ep_reward += r
+            rewards.append(ep_reward)
+        env_eval.close()
+        avg_r = np.mean(rewards)
+        print(f"Average reward: {avg_r:.2f}")
     
     return agent, avg_r
 
@@ -285,6 +389,8 @@ if __name__ == "__main__":
         seed: int = None,
         track: bool = False,
         capture_video: bool = True,
+        eval_every: int = None,
+        eval_episodes: int = None,
     ):
         """
         Universal RL training script.
@@ -299,6 +405,8 @@ if __name__ == "__main__":
             seed: Random seed (overrides config)
             track: Enable wandb tracking
             capture_video: Capture training videos
+            eval_every: Evaluate every N timesteps (overrides config)
+            eval_episodes: Number of episodes for evaluation (overrides config)
         """
         # Collect overrides
         overrides = {}
@@ -316,6 +424,10 @@ if __name__ == "__main__":
             overrides['track'] = track
         if not capture_video:
             overrides['capture_video'] = capture_video
+        if eval_every is not None:
+            overrides['eval_every'] = eval_every
+        if eval_episodes is not None:
+            overrides['eval_episodes'] = eval_episodes
         
         # Run experiment
         run_experiment(config_name=config_name, algorithm=algorithm, **overrides)
