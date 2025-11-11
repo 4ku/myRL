@@ -1,17 +1,13 @@
-import os
 import random
 import time
 import importlib
-from typing import Any
 
 import gymnasium as gym
 import jax
 import numpy as np
 import optax
-import tyro
 from torch.utils.tensorboard import SummaryWriter
 from stable_baselines3.common.buffers import ReplayBuffer
-import jax.numpy as jnp
 
 # Import our universal config system
 from configs.config import get_config, get_predefined_config, ALGORITHMS, PREDEFINED_CONFIGS
@@ -131,7 +127,7 @@ def evaluate_agent(agent, env_id, n_episodes=5, seed=1, deterministic=True):
     }
 
 
-def run_experiment(config_name: str = None, algorithm: str = "dqn", **config_overrides):
+def main(config_name: str = None, algorithm: str = "dqn", **config_overrides):
     """
     Run a reinforcement learning experiment.
     
@@ -378,58 +374,5 @@ def run_experiment(config_name: str = None, algorithm: str = "dqn", **config_ove
 
 
 if __name__ == "__main__":
-    # Define command line interface
-    def main(
-        config_name: str = None,
-        algorithm: str = "dqn", 
-        env_id: str = None,
-        total_timesteps: int = None,
-        learning_rate: float = None,
-        batch_size: int = None,
-        seed: int = None,
-        track: bool = False,
-        capture_video: bool = True,
-        eval_every: int = None,
-        eval_episodes: int = None,
-    ):
-        """
-        Universal RL training script.
+    main()
         
-        Args:
-            config_name: Use a predefined config (e.g., 'dqn_cartpole', 'dqn_atari')
-            algorithm: Algorithm to use if config_name not provided
-            env_id: Environment ID (overrides config)
-            total_timesteps: Total training timesteps (overrides config)
-            learning_rate: Learning rate (overrides config)
-            batch_size: Batch size (overrides config)
-            seed: Random seed (overrides config)
-            track: Enable wandb tracking
-            capture_video: Capture training videos
-            eval_every: Evaluate every N timesteps (overrides config)
-            eval_episodes: Number of episodes for evaluation (overrides config)
-        """
-        # Collect overrides
-        overrides = {}
-        if env_id is not None:
-            overrides['env_id'] = env_id
-        if total_timesteps is not None:
-            overrides['total_timesteps'] = total_timesteps
-        if learning_rate is not None:
-            overrides['learning_rate'] = learning_rate
-        if batch_size is not None:
-            overrides['batch_size'] = batch_size
-        if seed is not None:
-            overrides['seed'] = seed
-        if track:
-            overrides['track'] = track
-        if not capture_video:
-            overrides['capture_video'] = capture_video
-        if eval_every is not None:
-            overrides['eval_every'] = eval_every
-        if eval_episodes is not None:
-            overrides['eval_episodes'] = eval_episodes
-        
-        # Run experiment
-        run_experiment(config_name=config_name, algorithm=algorithm, **overrides)
-
-    tyro.cli(main)

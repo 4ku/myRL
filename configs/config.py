@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
-import optax
 
 
 @dataclass

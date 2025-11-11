@@ -1,21 +1,7 @@
-# Core JAX ecosystem
-jaxlib>=0.4.0
+jax[cuda12]>=0.8.0
 flax>=0.7.0
 optax>=0.1.7
 chex>=0.1.7
-
-# RL environment and utilities
 gymnasium>=0.29.0
-stable-baselines3>=2.0.0
-
-# Logging and visualization
 tensorboard>=2.13.0
-wandb>=0.15.0
-
-# CLI and utilities
-tyro>=0.5.0
 numpy>=1.24.0
-
-# Optional: for Atari environments
-# ale-py>=0.8.0
-# gymnasium[atari]>=0.29.0 

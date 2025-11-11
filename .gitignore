@@ -1,3 +1,6 @@
 videos/
 runs/
 __pycache__/
+.venv/
+.cursor/
+experiments/
