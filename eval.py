@@ -1,15 +1,15 @@
+import argparse
+import os
+import importlib
 import random
 import jax
 import numpy as np
 import optax
 from flax.training import checkpoints
-import argparse
-import os
 
-from configs.cartpole_dqn import Config
 from jaxrl.agents.base_model import BaseModel
 
-def evaluate_agent(agent, env, num_episodes=5, seed=1):
+def evaluate(env, agent, num_episodes=5, seed=1):
     for i in range(num_episodes):
         obs, info = env.reset(seed=seed + i)
         done = False
@@ -68,6 +68,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="cartpole_dqn",
+        help="Config module name from configs folder (e.g., cartpole_dqn)",
+    )
     parser.add_argument(
         "--checkpoint_path",
         type=str,

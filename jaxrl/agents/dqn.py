@@ -29,17 +29,14 @@ class DQN(BaseModel):
         cls,
         rng: jax.Array,
         observation_sample: Array,
-        action_sample: Array,
+        action_dim: int,
         network: nn.Module,
         optimizer: optax.GradientTransformation,
         # hyperparameters
         gamma: float,
         tau: float,
     ) -> Self:
-        if len(action_sample.shape) > 1:
-            raise ValueError("Action sample must be a 1D array")
-        output_dim = action_sample.shape[0] if len(action_sample.shape) == 1 else 1
-        critic = DiscreteCritic(network=network, output_dim=output_dim)
+        critic = DiscreteCritic(network=network, output_dim=action_dim)
 
         rng, init_rng, target_rng = jax.random.split(rng, 3)
         return cls(

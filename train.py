@@ -1,4 +1,6 @@
+import argparse
 import datetime
+import importlib
 import os
 import random
 import jax
@@ -9,13 +11,14 @@ from torch.utils.tensorboard import SummaryWriter
 from flax.training import checkpoints
 
 from datastore.replay_buffer import ReplayBuffer
-from configs.cartpole_dqn import Config
 from jaxrl.agents.base_model import BaseModel
 from utils import log_info
 
 
-def main():
-    config = Config()
+def main(args):
+    # Dynamically import config module
+    config_module = importlib.import_module(f"configs.{args.config}")
+    config = config_module.Config()
 
     # Seeding
     random.seed(config.seed)
@@ -26,10 +29,17 @@ def main():
     env = config.get_environment()
 
     # Create agent
+    if hasattr(env.action_space, 'n'):
+        action_dim = env.action_space.n
+    else:
+        if len(env.action_space.shape) > 1:
+            raise ValueError("Action space must be a 1D array")
+        action_dim = env.action_space.shape[0]
+    
     agent: BaseModel = config.agent.agent.create(
         rng=rng,
         observation_sample=env.observation_space.sample(),
-        action_sample=env.action_space.sample(),
+        action_dim=action_dim,
         optimizer=optax.adam(learning_rate=config.agent.learning_rate),
         network=config.agent.network,
         **config.agent.hyperparams,
@@ -59,7 +69,9 @@ def main():
     writer.add_text("config", str(config))
 
     # Training loop
-    obs, _ = env.reset(seed=config.seed)
+    seed = int(jax.random.randint(rng, (), 0, 2**31 - 1))
+    obs, _ = env.reset(seed=seed)
+    episode_reward = 0.0
 
     for global_step in tqdm(range(config.total_timesteps), desc="Training"):
 
@@ -68,6 +80,7 @@ def main():
             config.exploration_fraction * config.total_timesteps
         )
         epsilon = max(slope * global_step + config.start_e, config.end_e)
+        writer.add_scalar("charts/epsilon", epsilon, global_step)
 
         # Sample action
         action = (
@@ -79,6 +92,7 @@ def main():
 
         # Execute environment step
         next_obs, reward, done, truncated, infos = env.step(action)
+        episode_reward += reward
 
         transition = {
             "observation": obs,
@@ -91,6 +105,13 @@ def main():
         # Store transition in replay buffer
         replay_buffer.insert(transition)
         obs = next_obs
+
+        if done or truncated:
+            writer.add_scalar("charts/episodic_return", episode_reward, global_step)
+            episode_reward = 0.0
+            rng, _ = jax.random.split(rng)
+            seed = int(jax.random.randint(rng, (), 0, 2**31 - 1))
+            obs, info = env.reset(seed=seed)
 
         # Update agent
         if replay_buffer.size < config.batch_size:
@@ -113,4 +134,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Train RL agent")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="cartpole_dqn",
+        help="Config module name from configs folder (e.g., cartpole_dqn)",
+    )
+    args = parser.parse_args()
+    main(args)
