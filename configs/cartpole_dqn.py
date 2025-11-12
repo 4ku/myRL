@@ -29,7 +29,7 @@ class Config():
     total_timesteps: int = 200_001
     buffer_size: int = 100_000
     batch_size: int = 256
-    utd_ratio: int = 8
+    utd_ratio: int = 4
     checkpoint_period: int = 20_000
     # Exploration
     start_e: float = 1.0
@@ -40,4 +40,12 @@ class Config():
     eval_episodes: int = 5
 
     def get_environment(self) -> gym.Env:
-        return gym.make("CartPole-v1")
+        env = gym.make("CartPole-v1")
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        return env
+
+    def get_eval_environment(self, video_folder: str) -> gym.Env:
+        env = gym.make("CartPole-v1", render_mode='rgb_array')
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.RecordVideo(env, video_folder, episode_trigger=lambda x: True)
+        return env

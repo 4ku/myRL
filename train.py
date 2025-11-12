@@ -71,7 +71,6 @@ def main(args):
 
     # Training loop
     obs, _ = env.reset(seed=config.seed)
-    episode_reward = 0.0
 
     for global_step in tqdm(range(config.total_timesteps), desc="Training"):
 
@@ -92,7 +91,6 @@ def main(args):
 
         # Execute environment step
         next_obs, reward, done, truncated, infos = env.step(action)
-        episode_reward += reward
 
         transition = {
             "observation": obs,
@@ -107,8 +105,7 @@ def main(args):
         obs = next_obs
 
         if done or truncated:
-            writer.add_scalar("charts/episodic_return", episode_reward, global_step)
-            episode_reward = 0.0
+            log_info(writer, infos, global_step)
             seed = np.random.randint(0, 2**31 - 1)
             obs, _ = env.reset(seed=seed)
 
