@@ -17,11 +17,13 @@ class ReplayBuffer:
         self,
         example_transition: Dict[str, Any],
         capacity: int,
+        seed: int,
     ):
         self._example_transition = example_transition
         self._capacity = int(capacity)
         self._size = 0
         self._insert_index = 0
+        self._rng = np.random.RandomState(seed)
 
         def _tree_init_storage_from_example(
             example: ArrayTree, capacity: int
@@ -97,7 +99,7 @@ class ReplayBuffer:
 
         # Sample starting indices ensuring sequences don't wrap around buffer boundary
         max_start_idx = self.size - sequence_length + 1
-        idxs = np.random.randint(max_start_idx, size=batch_size)
+        idxs = self._rng.randint(max_start_idx, size=batch_size)
         # Generate all indices for sequences: (batch_size, sequence_length)
         all_idxs = idxs[:, None] + np.arange(sequence_length)[None, :]
         all_idxs = all_idxs.flatten()

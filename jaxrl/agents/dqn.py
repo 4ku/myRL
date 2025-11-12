@@ -38,12 +38,14 @@ class DQN(BaseModel):
     ) -> Self:
         critic = DiscreteCritic(network=network, output_dim=action_dim)
 
-        rng, init_rng, target_rng = jax.random.split(rng, 3)
+        rng, init_rng = jax.random.split(rng)
+        params = critic.init(init_rng, observation_sample, training=False)
+
         return cls(
             state=TrainState.create(
                 apply_fn=critic.apply,
-                params=critic.init(init_rng, observation_sample, training=False),
-                target_params=critic.init(target_rng, observation_sample, training=False),
+                params=params,
+                target_params=params,
                 tx=optimizer,
                 rng=rng,
             ),
@@ -52,7 +54,7 @@ class DQN(BaseModel):
 
     @jax.jit
     def update(self: Self, batch: Batch) -> Tuple[Self, dict]:
-        # check shapes
+        # Check shapes
         batch_size = batch["observation"].shape[0]
         observations = batch["observation"][:, 0]
         next_observations = batch["observation"][:, 1]

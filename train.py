@@ -56,6 +56,7 @@ def main(args):
     replay_buffer = ReplayBuffer(
         example_transition=example_transition,
         capacity=config.buffer_size,
+        seed=config.seed,
     )
 
     # Setup logging
@@ -69,8 +70,7 @@ def main(args):
     writer.add_text("config", str(config))
 
     # Training loop
-    seed = int(jax.random.randint(rng, (), 0, 2**31 - 1))
-    obs, _ = env.reset(seed=seed)
+    obs, _ = env.reset(seed=config.seed)
     episode_reward = 0.0
 
     for global_step in tqdm(range(config.total_timesteps), desc="Training"):
@@ -109,9 +109,8 @@ def main(args):
         if done or truncated:
             writer.add_scalar("charts/episodic_return", episode_reward, global_step)
             episode_reward = 0.0
-            rng, _ = jax.random.split(rng)
-            seed = int(jax.random.randint(rng, (), 0, 2**31 - 1))
-            obs, info = env.reset(seed=seed)
+            seed = np.random.randint(0, 2**31 - 1)
+            obs, _ = env.reset(seed=seed)
 
         # Update agent
         if replay_buffer.size < config.batch_size:
