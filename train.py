@@ -13,6 +13,7 @@ import orbax.checkpoint as ocp
 from datastore.replay_buffer import ReplayBuffer
 from jaxrl.agents.base_model import BaseModel
 from utils import log_info
+from eval import evaluate
 
 
 def main(args):
@@ -128,6 +129,13 @@ def main(args):
                 f"{checkpoint_dir}/{global_step}",
                 args=ocp.args.PyTreeSave(agent.state),
             )
+
+        # Evaluate agent
+        if global_step % config.eval_every == 0:
+            video_folder = f"{experiment_folder}/eval_videos/{global_step}"
+            eval_env = config.get_eval_environment(video_folder)
+            eval_infos = evaluate(eval_env, agent, num_episodes=config.eval_episodes, seed=config.seed)
+            log_info(writer, eval_infos, global_step)
 
     # Wait for any pending checkpoint saves to complete
     checkpointer.wait_until_finished()

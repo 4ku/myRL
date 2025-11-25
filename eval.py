@@ -10,6 +10,7 @@ import orbax.checkpoint as ocp
 from jaxrl.agents.base_model import BaseModel
 
 def evaluate(env, agent, num_episodes=5, seed=1):
+    infos = []
     for i in range(num_episodes):
         obs, info = env.reset(seed=seed + i)
         done = False
@@ -18,11 +19,41 @@ def evaluate(env, agent, num_episodes=5, seed=1):
         while not done and not truncated:
             action = agent.sample_actions(obs)
             action = jax.device_get(action)
-            next_obs, reward, done, truncated, infos = env.step(action)
+            next_obs, reward, done, truncated, info = env.step(action)
             total_reward += reward
             obs = next_obs
+        infos.append(info)
         print(f"Episode {i+1}: Total reward = {total_reward}")
     env.close()
+
+    return aggregate_infos(infos, prefix="eval")
+
+
+def aggregate_infos(infos, prefix=""):
+    """Recursively aggregate a list of info dicts by concatenating values for same keys."""
+    aggregated = {}
+    if not infos:
+        return aggregated
+    
+    all_keys = set()
+    for info in infos:
+        all_keys.update(info.keys())
+    
+    for key in all_keys:
+        values = [info[key] for info in infos if key in info]
+        if not values:
+            continue
+        
+        prefix_key = f"{prefix}/{key}" if prefix else key
+        
+        if isinstance(values[0], dict):
+            # Recursively aggregate nested dicts
+            nested = aggregate_infos(values, prefix=prefix_key)
+            aggregated.update(nested)
+        elif isinstance(values[0], (int, float, np.number, np.ndarray)):
+            aggregated[prefix_key] = np.concatenate([np.atleast_1d(v) for v in values])
+    
+    return aggregated
 
 def main(args):
     # Dynamically import config module
@@ -36,7 +67,7 @@ def main(args):
 
     # Create environment
     video_path = os.path.dirname(os.path.normpath(args.checkpoint_path))
-    env = config.get_eval_environment(f"{video_path}/videos")
+    env = config.get_eval_environment(f"{video_path}/eval_videos/{args.checkpoint_step}")
 
     # Create agent
     if hasattr(env.action_space, 'n'):
