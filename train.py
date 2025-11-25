@@ -8,7 +8,7 @@ import numpy as np
 import optax
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from flax.training import checkpoints
+import orbax.checkpoint as ocp
 
 from datastore.replay_buffer import ReplayBuffer
 from jaxrl.agents.base_model import BaseModel
@@ -29,13 +29,13 @@ def main(args):
     env = config.get_environment()
 
     # Create agent
-    if hasattr(env.action_space, 'n'):
+    if hasattr(env.action_space, "n"):
         action_dim = env.action_space.n
     else:
         if len(env.action_space.shape) > 1:
             raise ValueError("Action space must be a 1D array")
         action_dim = env.action_space.shape[0]
-    
+
     agent: BaseModel = config.agent.agent.create(
         rng=rng,
         observation_sample=env.observation_space.sample(),
@@ -68,6 +68,10 @@ def main(args):
         os.makedirs(experiment_folder)
     writer = SummaryWriter(f"{experiment_folder}/tensorboard")
     writer.add_text("config", str(config))
+
+    # Setup checkpointing
+    checkpoint_dir = os.path.abspath(f"{experiment_folder}/checkpoints")
+    checkpointer = ocp.AsyncCheckpointer(ocp.PyTreeCheckpointHandler())
 
     # Training loop
     obs, _ = env.reset(seed=config.seed)
@@ -114,19 +118,19 @@ def main(args):
             continue
         for i in range(config.utd_ratio):
             data = replay_buffer.sample(config.batch_size)
-            agent, info = agent.update(data)
+            agent, agent_info = agent.update(data)
 
-        log_info(writer, info, global_step)
+        log_info(writer, agent_info, global_step)
 
         # Save checkpoint
         if global_step % config.checkpoint_period == 0:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            checkpoints.save_checkpoint(
-                f"{current_dir}/{experiment_folder}/checkpoints/",
-                agent.state,
-                step=global_step,
-                keep=20,
+            checkpointer.save(
+                f"{checkpoint_dir}/{global_step}",
+                args=ocp.args.PyTreeSave(agent.state),
             )
+
+    # Wait for any pending checkpoint saves to complete
+    checkpointer.wait_until_finished()
 
 
 if __name__ == "__main__":

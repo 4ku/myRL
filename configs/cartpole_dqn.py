@@ -29,7 +29,7 @@ class Config():
     total_timesteps: int = 200_001
     buffer_size: int = 100_000
     batch_size: int = 256
-    utd_ratio: int = 4
+    utd_ratio: int = 8
     checkpoint_period: int = 20_000
     # Exploration
     start_e: float = 1.0

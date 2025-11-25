@@ -4,10 +4,10 @@ from typing import Sequence, Callable
 
 
 class MLP(nn.Module):
-    hidden_dims: Sequence[int] = (128, 128)
-    activation: Callable[[jnp.ndarray], jnp.ndarray] = nn.swish
-    use_layer_norm: bool = True
-    dropout_rate: float = 0.1
+    hidden_dims: Sequence[int]
+    activation: Callable[[jnp.ndarray], jnp.ndarray]
+    use_layer_norm: bool
+    dropout_rate: float
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool) -> jnp.ndarray:
