@@ -41,7 +41,10 @@ def main(args):
         rng=rng,
         observation_sample=env.observation_space.sample(),
         action_dim=action_dim,
-        optimizer=optax.adam(learning_rate=config.agent.learning_rate),
+        optimizer=optax.chain(
+            optax.clip_by_global_norm(config.agent.max_grad_norm),
+            optax.adam(learning_rate=config.agent.learning_rate),
+        ),
         network=config.agent.network,
         **config.agent.hyperparams,
     )

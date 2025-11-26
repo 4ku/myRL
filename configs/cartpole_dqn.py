@@ -10,8 +10,9 @@ from jaxrl.agents.dqn import DQN
 class Agent:
     agent: PyTreeNode = DQN
     hyperparams: dict = field(default_factory=lambda: {
-        "gamma": 0.99,
+        "gamma": 0.98,
         "tau": 0.005,
+        "double_dqn": True,
     })
     network: nn.Module = MLP(
         hidden_dims=(128, 128),
@@ -20,16 +21,17 @@ class Agent:
         dropout_rate=0.1,
     )
     learning_rate: float = 5e-4
+    max_grad_norm: float = 50.0
 
 
 @dataclass
 class Config():
     agent: Agent = field(default_factory=Agent)
     seed: int = 1
-    total_timesteps: int = 200_001
+    total_timesteps: int = 500_001
     buffer_size: int = 100_000
-    batch_size: int = 256
-    utd_ratio: int = 8
+    batch_size: int = 512
+    utd_ratio: int = 1
     checkpoint_period: int = 20_000
     # Exploration
     start_e: float = 1.0

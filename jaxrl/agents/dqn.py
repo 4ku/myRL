@@ -35,6 +35,7 @@ class DQN(BaseModel):
         # hyperparameters
         gamma: float,
         tau: float,
+        double_dqn: bool,
     ) -> Self:
         critic = DiscreteCritic(network=network, output_dim=action_dim)
 
@@ -49,7 +50,7 @@ class DQN(BaseModel):
                 tx=optimizer,
                 rng=rng,
             ),
-            config=dict(gamma=gamma, tau=tau),
+            config=dict(gamma=gamma, tau=tau, double_dqn=double_dqn),
         )
 
     @jax.jit
@@ -68,13 +69,19 @@ class DQN(BaseModel):
         q_next_target = self.state.apply_fn(
             self.state.target_params, next_observations, training=False
         )  # (batch_size, action_dim)
-        q_next_target = jnp.max(q_next_target, axis=-1)
+        if self.config["double_dqn"]:
+            # Choose the action with the highest Q-value from the online network
+            q_next_online = self.state.apply_fn(
+                self.state.params, next_observations, training=False
+            )  # (batch_size, action_dim)
+            best_actions = jnp.argmax(q_next_online, axis=-1)
+            q_next_target = q_next_target[jnp.arange(batch_size), best_actions]
+        else:
+            q_next_target = jnp.max(q_next_target, axis=-1)
+
         chex.assert_shape(q_next_target, (batch_size,))
 
-        next_q_value = (
-            rewards
-            + (1 - dones) * self.config["gamma"] * q_next_target
-        )
+        next_q_value = rewards + (1 - dones) * self.config["gamma"] * q_next_target
         chex.assert_shape(next_q_value, (batch_size,))
 
         new_rng, _ = jax.random.split(self.state.rng, 2)
@@ -83,7 +90,7 @@ class DQN(BaseModel):
             q_pred = self.state.apply_fn(
                 params, observations, training=True, rngs=new_rng
             )  # (batch_size, action_dim)
-            q_pred = q_pred[jnp.arange(q_pred.shape[0]), actions]
+            q_pred = q_pred[jnp.arange(batch_size), actions]
             chex.assert_shape(q_pred, (batch_size,))
             return ((q_pred - next_q_value) ** 2).mean(), q_pred
 
@@ -100,6 +107,7 @@ class DQN(BaseModel):
         info = {
             "loss": loss_value,
             "q_pred": q_pred,
+            "grad_norm": optax.global_norm(grads),
         }
         return self.replace(state=new_state), info
 
