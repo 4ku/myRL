@@ -35,27 +35,43 @@ class DQN(BaseModel):
         # hyperparameters
         gamma: float,
         tau: float,
-        double_dqn: bool,
+        critic_ensemble_size: int,  # N: number of Q-networks in ensemble
+        critic_subsample_size: int,  # M: number of networks to sample for min
     ) -> Self:
+        assert (
+            critic_subsample_size <= critic_ensemble_size
+        ), "critic_subsample_size must be <= critic_ensemble_size"
+
         critic = DiscreteCritic(network=network, output_dim=action_dim)
 
-        rng, init_rng = jax.random.split(rng)
-        params = critic.init(init_rng, observation_sample, training=False)
+        # Initialize N separate sets of parameters
+        def init_single(rng):
+            return critic.init(rng, observation_sample, training=False, rng=rng)
+
+        rng, *init_rngs = jax.random.split(rng, critic_ensemble_size + 1)
+        init_rngs = jnp.stack(init_rngs)
+
+        # vmap over initialization to get N parameter sets
+        ensemble_params = jax.vmap(init_single)(init_rngs)
 
         return cls(
             state=TrainState.create(
                 apply_fn=critic.apply,
-                params=params,
-                target_params=params,
+                params=ensemble_params,
+                target_params=ensemble_params,
                 tx=optimizer,
                 rng=rng,
             ),
-            config=dict(gamma=gamma, tau=tau, double_dqn=double_dqn),
+            config=dict(
+                gamma=gamma,
+                tau=tau,
+                critic_ensemble_size=critic_ensemble_size,
+                critic_subsample_size=critic_subsample_size,
+            ),
         )
 
     @jax.jit
     def update(self: Self, batch: Batch) -> Tuple[Self, dict]:
-        # Check shapes
         batch_size = batch["observation"].shape[0]
         observations = batch["observation"][:, 0]
         next_observations = batch["observation"][:, 1]
@@ -66,52 +82,72 @@ class DQN(BaseModel):
         chex.assert_shape(rewards, (batch_size,))
         chex.assert_shape(dones, (batch_size,))
 
-        q_next_target = self.state.apply_fn(
-            self.state.target_params, next_observations, training=False
-        )  # (batch_size, action_dim)
-        if self.config["double_dqn"]:
-            # Choose the action with the highest Q-value from the online network
-            q_next_online = self.state.apply_fn(
-                self.state.params, next_observations, training=False
-            )  # (batch_size, action_dim)
-            best_actions = jnp.argmax(q_next_online, axis=-1)
-            q_next_target = q_next_target[jnp.arange(batch_size), best_actions]
-        else:
-            q_next_target = jnp.max(q_next_target, axis=-1)
+        critic_ensemble_size = self.config["critic_ensemble_size"]
+        critic_subsample_size = self.config["critic_subsample_size"]
 
-        chex.assert_shape(q_next_target, (batch_size,))
+        rng, subset_rng, new_rng = jax.random.split(self.state.rng, 3)
 
-        next_q_value = rewards + (1 - dones) * self.config["gamma"] * q_next_target
+        # Randomly sample M indices from N critics
+        subset_indices = jax.random.choice(
+            subset_rng,
+            critic_ensemble_size,
+            shape=(critic_subsample_size,),
+            replace=False,
+        )
+
+        def compute_q_values(params):
+            return self.state.apply_fn(params, next_observations, training=False, rng=new_rng)
+
+
+        sampled_target_params = jax.tree.map(lambda x: x[subset_indices], self.state.target_params)
+        sampled_online_params = jax.tree.map(lambda x: x[subset_indices], self.state.params)
+        sampled_target_q = jax.vmap(compute_q_values)(sampled_target_params)  # (N, batch_size, action_dim)
+        sampled_online_q = jax.vmap(compute_q_values)(sampled_online_params)  # (N, batch_size, action_dim)
+
+        median_sampled_online_q = jnp.median(sampled_online_q, axis=0)  # (batch_size, action_dim)
+        best_actions = jnp.argmax(median_sampled_online_q, axis=-1)  # (batch_size,)
+        sampled_q_for_actions = sampled_target_q[
+            :, jnp.arange(batch_size), best_actions
+        ]  # (M, batch_size)
+        min_target_q = jnp.min(sampled_q_for_actions, axis=0)  # (batch_size,)
+
+        next_q_value = rewards + (1 - dones) * self.config["gamma"] * min_target_q
         chex.assert_shape(next_q_value, (batch_size,))
 
-        new_rng, _ = jax.random.split(self.state.rng, 2)
-
-        def mse_loss(params):
-            q_pred = self.state.apply_fn(
-                params, observations, training=True, rngs=new_rng
-            )  # (batch_size, action_dim)
+        def compute_loss(p):
+            q_pred = self.state.apply_fn(p, observations, training=True, rng=new_rng)
             q_pred = q_pred[jnp.arange(batch_size), actions]
-            chex.assert_shape(q_pred, (batch_size,))
-            return ((q_pred - next_q_value) ** 2).mean(), q_pred
+            # return optax.huber_loss(q_pred, next_q_value).mean(), q_pred
+            return optax.l2_loss(q_pred, next_q_value).mean(), q_pred
 
-        (loss_value, q_pred), grads = jax.value_and_grad(mse_loss, has_aux=True)(
-            self.state.params
-        )
+        compute_grads = jax.value_and_grad(compute_loss, has_aux=True)
+        (all_losses, all_q_preds), grads = jax.vmap(compute_grads)(self.state.params)
+
+        chex.assert_shape(all_losses, (critic_ensemble_size,))
+        chex.assert_shape(all_q_preds, (critic_ensemble_size, batch_size))
+        
         new_state = self.state.apply_gradients(grads=grads)
         new_state = new_state.replace(rng=new_rng)
 
+        # Update target params with polyak averaging
         new_target_params = optax.incremental_update(
-            self.state.params, self.state.target_params, self.config["tau"]
+            new_state.params, self.state.target_params, self.config["tau"]
         )
         new_state = new_state.replace(target_params=new_target_params)
+
         info = {
-            "loss": loss_value,
-            "q_pred": q_pred,
+            "loss": all_losses,
+            "q_pred": all_q_preds,
             "grad_norm": optax.global_norm(grads),
         }
         return self.replace(state=new_state), info
 
     @jax.jit
     def sample_actions(self: Self, observations: Array) -> Array:
-        q_values = self.state.apply_fn(self.state.params, observations, training=False)
-        return jnp.argmax(q_values, axis=-1)
+        # Use median Q-values across ensemble for action selection
+        def compute_q(params):
+            return self.state.apply_fn(params, observations, training=False, rng=self.state.rng)
+
+        all_q = jax.vmap(compute_q)(self.state.params)  # (N, batch_size, action_dim)
+        median_q = jnp.median(all_q, axis=0)  # (batch_size, action_dim)
+        return jnp.argmax(median_q, axis=-1)

@@ -1,6 +1,7 @@
 import flax.linen as nn
 import jax.numpy as jnp
 from typing import Sequence, Callable
+import jax
 
 
 class MLP(nn.Module):
@@ -10,8 +11,8 @@ class MLP(nn.Module):
     dropout_rate: float
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, training: bool) -> jnp.ndarray:
-        for size in self.hidden_dims:
+    def __call__(self, x: jnp.ndarray, training: bool, rng: jax.Array) -> jnp.ndarray:
+        for i, size in enumerate(self.hidden_dims):
             x = nn.Dense(size)(x)
 
             if self.use_layer_norm:
@@ -20,6 +21,7 @@ class MLP(nn.Module):
             x = self.activation(x)
 
             if self.dropout_rate > 0:
-                x = nn.Dropout(rate=self.dropout_rate, deterministic=not training)(x)
+                layer_rng = jax.random.fold_in(rng, i)
+                x = nn.Dropout(rate=self.dropout_rate, deterministic=not training)(x, rng=layer_rng)
 
         return x
