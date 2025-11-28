@@ -19,9 +19,9 @@ class Agent:
         hidden_dims=(256,),
         activation=nn.swish,
         use_layer_norm=True,
-        dropout_rate=0.1,
+        dropout_rate=0.03,
     )
-    learning_rate: float = 3e-4
+    learning_rate: float = 5e-4
     max_grad_norm: float = 50.0
 
 
@@ -36,8 +36,8 @@ class Config():
     checkpoint_period: int = 10_000
     # Exploration
     start_e: float = 1.0
-    end_e: float = 0.01
-    exploration_fraction: float = 0.1
+    end_e: float = 0.03
+    exploration_fraction: float = 0.15
     # Evaluation
     eval_every: int = 10_000
     eval_episodes: int = 5

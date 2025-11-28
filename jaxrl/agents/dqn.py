@@ -98,11 +98,10 @@ class DQN(BaseModel):
         def compute_q_values(params):
             return self.state.apply_fn(params, next_observations, training=False, rng=new_rng)
 
-
         sampled_target_params = jax.tree.map(lambda x: x[subset_indices], self.state.target_params)
         sampled_online_params = jax.tree.map(lambda x: x[subset_indices], self.state.params)
-        sampled_target_q = jax.vmap(compute_q_values)(sampled_target_params)  # (N, batch_size, action_dim)
-        sampled_online_q = jax.vmap(compute_q_values)(sampled_online_params)  # (N, batch_size, action_dim)
+        sampled_target_q = jax.vmap(compute_q_values)(sampled_target_params)  # (M, batch_size, action_dim)
+        sampled_online_q = jax.vmap(compute_q_values)(sampled_online_params)  # (M, batch_size, action_dim)
 
         median_sampled_online_q = jnp.median(sampled_online_q, axis=0)  # (batch_size, action_dim)
         best_actions = jnp.argmax(median_sampled_online_q, axis=-1)  # (batch_size,)
