@@ -13,11 +13,13 @@ def evaluate(env, agent, num_episodes=5, seed=1):
     infos = []
     for i in range(num_episodes):
         obs, info = env.reset(seed=seed + i)
+        rng = jax.random.key(seed + i)
         done = False
         truncated = False
         total_reward = 0
         while not done and not truncated:
-            action = agent.sample_actions(obs)
+            rng, action_rng = jax.random.split(rng)
+            action = agent.sample_actions(obs, action_rng)
             action = jax.device_get(action)
             next_obs, reward, done, truncated, info = env.step(action)
             total_reward += reward

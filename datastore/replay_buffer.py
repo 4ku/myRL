@@ -86,7 +86,8 @@ class ReplayBuffer:
             sequence_length: Length of each sequence
 
         Returns:
-            FrozenDict with shape (batch_size, sequence_length, ...) for each field
+            FrozenDict with shape (batch_size, sequence_length, ...) for each field.
+            If sequence_length=1, the shape is (batch_size, ...).
         """
         if sequence_length <= 0:
             raise ValueError("sequence_length must be >= 1")
@@ -97,11 +98,32 @@ class ReplayBuffer:
                 f"Not enough data to sample sequences of length {sequence_length} (size={self._size})."
             )
 
-        # Sample starting indices ensuring sequences don't wrap around buffer boundary
-        max_start_idx = self.size - sequence_length + 1
-        idxs = self._rng.randint(max_start_idx, size=batch_size)
+        # Sample valid logical starting indices.
+        # Logical index 0 corresponds to the oldest element in the buffer (at self._insert_index if full).
+        # There are (size - sequence_length + 1) valid sequences in total.
+        num_valid_sequences = self.size - sequence_length + 1
+        logical_idxs = self._rng.randint(num_valid_sequences, size=batch_size)
+        
+        # Map logical indices to physical indices in the circular buffer
+        # If buffer is not full, oldest is at 0.
+        # If buffer is full, oldest is at self._insert_index.
+        start_idx_offset = self._insert_index if self.size == self.capacity else 0
+        idxs = (logical_idxs + start_idx_offset) % self._capacity
+
+        if sequence_length == 1:
+
+            def _tree_gather(storage: ArrayTree) -> ArrayTree:
+                if isinstance(storage, dict):
+                    return {k: _tree_gather(v) for k, v in storage.items()}
+                return storage[idxs]
+
+            batch_tree = _tree_gather(self._storage)
+            return FrozenDict(batch_tree)
+
         # Generate all indices for sequences: (batch_size, sequence_length)
+        # Use modulo arithmetic to handle wrapping at the end of the physical buffer
         all_idxs = idxs[:, None] + np.arange(sequence_length)[None, :]
+        all_idxs = all_idxs % self._capacity
         all_idxs = all_idxs.flatten()
 
         def _tree_gather_and_reshape(storage: ArrayTree) -> ArrayTree:

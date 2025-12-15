@@ -8,7 +8,7 @@ import numpy as np
 import chex
 import flax.linen as nn
 
-from jaxrl.networks.critics import DiscreteCritic
+from jaxrl.networks.actor_critic_nets import DiscreteCritic
 from jaxrl.agents.base_model import BaseModel
 
 Array = Union[np.ndarray, jnp.ndarray]
@@ -17,7 +17,6 @@ Batch = Dict[str, Array]
 
 class TrainState(TrainState):
     target_params: flax.core.FrozenDict
-    rng: jax.Array
 
 
 class DQN(BaseModel):
@@ -60,7 +59,6 @@ class DQN(BaseModel):
                 params=ensemble_params,
                 target_params=ensemble_params,
                 tx=optimizer,
-                rng=rng,
             ),
             config=dict(
                 gamma=gamma,
@@ -71,7 +69,7 @@ class DQN(BaseModel):
         )
 
     @jax.jit
-    def update(self: Self, batch: Batch) -> Tuple[Self, dict]:
+    def update(self: Self, batch: Batch, rng: jax.Array) -> Tuple[Self, dict]:
         batch_size = batch["observation"].shape[0]
         observations = batch["observation"][:, 0]
         next_observations = batch["observation"][:, 1]
@@ -85,7 +83,7 @@ class DQN(BaseModel):
         critic_ensemble_size = self.config["critic_ensemble_size"]
         critic_subsample_size = self.config["critic_subsample_size"]
 
-        rng, subset_rng, new_rng = jax.random.split(self.state.rng, 3)
+        subset_rng, new_rng = jax.random.split(rng, 2)
 
         # Randomly sample M indices from N critics
         subset_indices = jax.random.choice(
@@ -96,14 +94,26 @@ class DQN(BaseModel):
         )
 
         def compute_q_values(params):
-            return self.state.apply_fn(params, next_observations, training=False, rng=new_rng)
+            return self.state.apply_fn(
+                params, next_observations, training=False, rng=new_rng
+            )
 
-        sampled_target_params = jax.tree.map(lambda x: x[subset_indices], self.state.target_params)
-        sampled_online_params = jax.tree.map(lambda x: x[subset_indices], self.state.params)
-        sampled_target_q = jax.vmap(compute_q_values)(sampled_target_params)  # (M, batch_size, action_dim)
-        sampled_online_q = jax.vmap(compute_q_values)(sampled_online_params)  # (M, batch_size, action_dim)
+        sampled_target_params = jax.tree.map(
+            lambda x: x[subset_indices], self.state.target_params
+        )
+        sampled_online_params = jax.tree.map(
+            lambda x: x[subset_indices], self.state.params
+        )
+        sampled_target_q = jax.vmap(compute_q_values)(
+            sampled_target_params
+        )  # (M, batch_size, action_dim)
+        sampled_online_q = jax.vmap(compute_q_values)(
+            sampled_online_params
+        )  # (M, batch_size, action_dim)
 
-        median_sampled_online_q = jnp.median(sampled_online_q, axis=0)  # (batch_size, action_dim)
+        median_sampled_online_q = jnp.median(
+            sampled_online_q, axis=0
+        )  # (batch_size, action_dim)
         best_actions = jnp.argmax(median_sampled_online_q, axis=-1)  # (batch_size,)
         sampled_q_for_actions = sampled_target_q[
             :, jnp.arange(batch_size), best_actions
@@ -124,9 +134,8 @@ class DQN(BaseModel):
 
         chex.assert_shape(all_losses, (critic_ensemble_size,))
         chex.assert_shape(all_q_preds, (critic_ensemble_size, batch_size))
-        
+
         new_state = self.state.apply_gradients(grads=grads)
-        new_state = new_state.replace(rng=new_rng)
 
         # Update target params with polyak averaging
         new_target_params = optax.incremental_update(
@@ -142,10 +151,10 @@ class DQN(BaseModel):
         return self.replace(state=new_state), info
 
     @jax.jit
-    def sample_actions(self: Self, observations: Array) -> Array:
+    def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
         # Use median Q-values across ensemble for action selection
         def compute_q(params):
-            return self.state.apply_fn(params, observations, training=False, rng=self.state.rng)
+            return self.state.apply_fn(params, observations, training=False, rng=rng)
 
         all_q = jax.vmap(compute_q)(self.state.params)  # (N, batch_size, action_dim)
         median_q = jnp.median(all_q, axis=0)  # (batch_size, action_dim)
