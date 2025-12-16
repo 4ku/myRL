@@ -78,12 +78,19 @@ class ReplayBuffer:
         self._insert_index = (self._insert_index + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
 
-    def sample(self, batch_size: int, sequence_length: int = 2) -> FrozenDict:
+    def sample(
+        self, 
+        batch_size: int, 
+        sequence_length: int,
+        sample_latest: bool,
+    ) -> FrozenDict:
         """Sample sequences of consecutive transitions.
 
         Args:
             batch_size: Number of sequences to sample
             sequence_length: Length of each sequence
+            sample_latest: If True, samples the most recently added sequences 
+                          and updates the buffer state to remove the sampled data.
 
         Returns:
             FrozenDict with shape (batch_size, sequence_length, ...) for each field.
@@ -102,13 +109,27 @@ class ReplayBuffer:
         # Logical index 0 corresponds to the oldest element in the buffer (at self._insert_index if full).
         # There are (size - sequence_length + 1) valid sequences in total.
         num_valid_sequences = self.size - sequence_length + 1
-        logical_idxs = self._rng.randint(num_valid_sequences, size=batch_size)
+        
+        if sample_latest:
+            if num_valid_sequences < batch_size:
+                 raise RuntimeError(
+                     f"Not enough valid sequences ({num_valid_sequences}) to sample {batch_size} latest sequences."
+                 )
+            # Select the last 'batch_size' logical indices
+            logical_idxs = np.arange(num_valid_sequences - batch_size, num_valid_sequences)
+        else:
+            logical_idxs = self._rng.randint(num_valid_sequences, size=batch_size)
         
         # Map logical indices to physical indices in the circular buffer
         # If buffer is not full, oldest is at 0.
         # If buffer is full, oldest is at self._insert_index.
         start_idx_offset = self._insert_index if self.size == self.capacity else 0
         idxs = (logical_idxs + start_idx_offset) % self._capacity
+
+        # Update buffer state if sampling latest (consume data)
+        if sample_latest:
+            self._size -= batch_size
+            self._insert_index = (self._insert_index - batch_size) % self._capacity
 
         if sequence_length == 1:
 

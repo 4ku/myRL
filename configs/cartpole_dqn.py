@@ -17,10 +17,13 @@ class Config:
     batch_size: int = 1024
     utd_ratio: int = 8
     checkpoint_period: int = 10_000
+    on_policy: bool = False
+
     # Exploration
     start_e: float = 1.0
     end_e: float = 0.03
     exploration_fraction: float = 0.15
+    
     # Evaluation
     eval_every: int = 10_000
     eval_episodes: int = 5

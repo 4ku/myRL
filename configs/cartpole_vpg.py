@@ -12,19 +12,20 @@ from jaxrl.agents.vpg import VPG
 class Config:
     seed: int = 1
     discount_factor: float = 0.99
-    total_timesteps: int = 100_001
+    total_timesteps: int = 1_000_001
     buffer_size: int = 1_000
     batch_size: int = 128
     utd_ratio: int = 2
-    checkpoint_period: int = 10_000
+    checkpoint_period: int = 50_000
+    on_policy: bool = True
     
     # Exploration
-    start_e: float = 0.5
+    start_e: float = 0.0
     end_e: float = 0.0
-    exploration_fraction: float = 0.15
+    exploration_fraction: float = 0.01
     
     # Evaluation
-    eval_every: int = 10_000
+    eval_every: int = 25_000
     eval_episodes: int = 5
 
     def get_environment(self) -> gym.Env:

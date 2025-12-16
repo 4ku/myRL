@@ -6,6 +6,7 @@ from typing import Union, Dict, Tuple, Self
 from flax.training.train_state import TrainState
 import numpy as np
 import flax.linen as nn
+import chex
 
 from jaxrl.agents.base_model import BaseModel
 from jaxrl.networks.actor_critic_nets import DiscreteActor, GaussianActor
@@ -49,10 +50,13 @@ class VPG(BaseModel):
 
     @jax.jit
     def update(self: Self, batch: Batch, rng: jax.Array) -> Tuple[Self, dict]:
-        observations = batch["observation"]
-        actions = batch["action"].squeeze()
-        returns = batch["return"].squeeze()
-
+        batch_size = batch["observation"].shape[0]
+        observations = batch["observation"][:, 0]
+        actions = batch["action"][:, 0]
+        returns = batch["return"][:, 0]
+        chex.assert_shape(actions, (batch_size,))
+        chex.assert_shape(returns, (batch_size,))
+        
         if not self.config["is_continuous"]:
             actions = actions.astype(jnp.int32)
 

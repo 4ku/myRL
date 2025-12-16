@@ -109,14 +109,22 @@ def main(args):
             obs, _ = env.reset(seed=seed)
 
         # Update agent
-        if replay_buffer.size < config.batch_size:
-            continue
-        for _ in range(config.utd_ratio):
-            data = replay_buffer.sample(config.batch_size)
-            agent, agent_info = agent.update(data, rng)
-            rng, _ = jax.random.split(rng)
+        if replay_buffer.size >= config.batch_size:
+            agent_info = {}
+            if config.on_policy:
+                while replay_buffer.size > config.batch_size:
+                    data = replay_buffer.sample(config.batch_size, sequence_length=2, sample_latest=True)
+                    for _ in range(config.utd_ratio):
+                        agent, agent_info = agent.update(data, rng)
+                        rng, _ = jax.random.split(rng)
+                replay_buffer.clear()
+            else:
+                for _ in range(config.utd_ratio):
+                    data = replay_buffer.sample(config.batch_size, sequence_length=2, sample_latest=False)
+                    agent, agent_info = agent.update(data, rng)
+                    rng, _ = jax.random.split(rng)
 
-        log_info(writer, agent_info, global_step)
+            log_info(writer, agent_info, global_step)
 
         # Save checkpoint
         if global_step % config.checkpoint_period == 0:
