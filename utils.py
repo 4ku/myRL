@@ -51,3 +51,19 @@ def log_info(writer: SummaryWriter, info: dict, global_step: int, prefix: str = 
                 writer.add_text(log_key, str(value), global_step)
             except:
                 pass  # Skip if we can't log it
+
+def compute_returns(episode_transitions, gamma):
+    """Compute discounted returns for each transition in the episode."""
+    returns = []
+    G = 0.0
+    # Compute returns backwards from end of episode
+    for transition in reversed(episode_transitions):
+        G = transition["reward"] + gamma * G
+        returns.append(G)
+    returns.reverse()
+    
+    # Add returns to transitions
+    for i, transition in enumerate(episode_transitions):
+        transition["return"] = returns[i]
+    
+    return episode_transitions

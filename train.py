@@ -11,7 +11,7 @@ import orbax.checkpoint as ocp
 
 from datastore.replay_buffer import ReplayBuffer
 from jaxrl.agents.base_model import BaseModel
-from utils import log_info
+from utils import log_info, compute_returns
 from eval import evaluate
 
 
@@ -41,6 +41,7 @@ def main(args):
         "reward": 0.0,
         "done": False,
         "truncated": False,
+        "return": 0.0,
     }
     # Create replay buffer
     replay_buffer = ReplayBuffer(
@@ -65,7 +66,8 @@ def main(args):
 
     # Training loop
     obs, _ = env.reset(seed=config.seed)
-
+    episode_transitions = []
+    
     for global_step in tqdm(range(config.total_timesteps), desc="Training"):
 
         # Get epsilon from linear schedule
@@ -94,12 +96,14 @@ def main(args):
             "done": done,
             "truncated": truncated,
         }
-
-        # Store transition in replay buffer
-        replay_buffer.insert(transition)
+        episode_transitions.append(transition)
         obs = next_obs
 
         if done or truncated:
+            episode_transitions = compute_returns(episode_transitions, config.discount_factor)
+            for transition in episode_transitions:
+                replay_buffer.insert(transition)
+            episode_transitions = []
             log_info(writer, infos, global_step)
             seed = np.random.randint(0, 2**31 - 1)
             obs, _ = env.reset(seed=seed)
