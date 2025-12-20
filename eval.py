@@ -72,20 +72,10 @@ def main(args):
     env = config.get_eval_environment(f"{video_path}/eval_videos/{args.checkpoint_step}")
 
     # Create agent
-    if hasattr(env.action_space, 'n'):
-        action_dim = env.action_space.n
-    else:
-        if len(env.action_space.shape) > 1:
-            raise ValueError("Action space must be a 1D array")
-        action_dim = env.action_space.shape[0]
-    
-    agent: BaseModel = config.agent.agent.create(
+    agent = config.get_agent(
         rng=rng,
-        observation_sample=env.observation_space.sample(),
-        action_dim=action_dim,
-        optimizer=optax.adam(learning_rate=config.agent.learning_rate),
-        network=config.agent.network,
-        **config.agent.hyperparams,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
     )
     
     # Load checkpoint

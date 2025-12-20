@@ -5,7 +5,7 @@ import optax
 import jax
 
 from jaxrl.networks.mlp import MLP
-from jaxrl.agents.dqn import DQN
+from jaxrl.agents.discrete.dqn import DQN
 
 
 @dataclass

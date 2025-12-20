@@ -112,7 +112,7 @@ def main(args):
         if replay_buffer.size >= config.batch_size:
             agent_info = {}
             if config.on_policy:
-                while replay_buffer.size > config.batch_size:
+                while replay_buffer.size >= config.batch_size:
                     data = replay_buffer.sample(config.batch_size, sequence_length=2, sample_latest=True)
                     for _ in range(config.utd_ratio):
                         agent, agent_info = agent.update(data, rng)
@@ -149,7 +149,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=str,
-        default="cartpole_dqn",
+        default="pendulum_vpg",
         help="Config module name from configs folder (e.g., cartpole_dqn)",
     )
     args = parser.parse_args()

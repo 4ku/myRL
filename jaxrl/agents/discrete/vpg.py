@@ -9,7 +9,7 @@ import flax.linen as nn
 import chex
 
 from jaxrl.agents.base_model import BaseModel
-from jaxrl.networks.actor_critic_nets import DiscreteActor, GaussianActor
+from jaxrl.networks.actor_critic_nets import DiscreteActor
 
 Array = Union[np.ndarray, jnp.ndarray]
 Batch = Dict[str, Array]
@@ -29,12 +29,8 @@ class VPG(BaseModel):
         optimizer: optax.GradientTransformation,
         # hyperparameters
         gamma: float,
-        is_continuous: bool,
     ) -> Self:
-        if is_continuous:
-            actor = GaussianActor(network=network, action_dim=action_dim)
-        else:
-            actor = DiscreteActor(network=network, action_dim=action_dim)
+        actor = DiscreteActor(network=network, action_dim=action_dim)
 
         rng, init_rng = jax.random.split(rng)
         params = actor.init(init_rng, observation_sample, training=False, rng=init_rng)
@@ -45,7 +41,10 @@ class VPG(BaseModel):
                 params=params,
                 tx=optimizer,
             ),
-            config=dict(gamma=gamma, is_continuous=is_continuous),
+            config=dict(
+                gamma=gamma,
+                action_dim=action_dim,
+            ),
         )
 
     @jax.jit
@@ -54,37 +53,20 @@ class VPG(BaseModel):
         observations = batch["observation"][:, 0]
         actions = batch["action"][:, 0]
         returns = batch["return"][:, 0]
+
         chex.assert_shape(actions, (batch_size,))
+        actions = actions.astype(jnp.int32)
         chex.assert_shape(returns, (batch_size,))
-        
-        if not self.config["is_continuous"]:
-            actions = actions.astype(jnp.int32)
 
         def compute_loss(params):
-            if self.config["is_continuous"]:
-                mean, log_std = self.state.apply_fn(
-                    params, observations, training=True, rng=rng
-                )
-                std = jnp.exp(log_std)
-
-                # Gaussian log prob: -0.5 * ((x - mu)/sigma)^2 - log(sigma) - 0.5 * log(2pi)
-                # Sum over action dimension
-                log_probs_all = (
-                    -0.5 * jnp.square((actions - mean) / std)
-                    - log_std
-                    - 0.5 * jnp.log(2 * jnp.pi)
-                )
-                log_probs = jnp.sum(log_probs_all, axis=-1)
-
-            else:
-                logits = self.state.apply_fn(
-                    params, observations, training=True, rng=rng
-                )
-                log_probs_all = jax.nn.log_softmax(logits)
-                # Select log probability of the taken action
-                log_probs = jnp.take_along_axis(
-                    log_probs_all, actions[:, None], axis=1
-                ).squeeze()
+            logits = self.state.apply_fn(
+                params, observations, training=True, rng=rng
+            )
+            log_probs_all = jax.nn.log_softmax(logits)
+            # Select log probability of the taken action
+            log_probs = jnp.take_along_axis(
+                log_probs_all, actions[:, None], axis=1
+            ).squeeze()
 
             loss = -jnp.mean(log_probs * returns)
             return loss, log_probs
@@ -105,16 +87,8 @@ class VPG(BaseModel):
 
     @jax.jit
     def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
-        if self.config["is_continuous"]:
-            mean, log_std = self.state.apply_fn(
-                self.state.params, observations, training=False, rng=rng
-            )
-            std = jnp.exp(log_std)
-            actions = mean + std * jax.random.normal(rng, shape=mean.shape)
-        else:
-            logits = self.state.apply_fn(
-                self.state.params, observations, training=False, rng=rng
-            )
-            actions = jax.random.categorical(rng, logits)
-
+        logits = self.state.apply_fn(
+            self.state.params, observations, training=False, rng=rng
+        )
+        actions = jax.random.categorical(rng, logits)
         return actions
