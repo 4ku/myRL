@@ -73,7 +73,6 @@ class Config:
             policy_noise=0.2,
             noise_clip=0.5,
             policy_freq=2,
-            exploration_noise=0.1,
             critic_ensemble_size=10,
             critic_subsample_size=2,
         )

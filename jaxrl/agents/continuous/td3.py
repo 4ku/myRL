@@ -286,7 +286,6 @@ class TD3(BaseModel):
         tau: float,
         policy_noise: float,
         noise_clip: float,
-        exploration_noise: float,
         critic_ensemble_size: int,
         critic_subsample_size: int,
         policy_freq: int,
