@@ -34,12 +34,12 @@ class DQN(BaseModel):
         # hyperparameters
         gamma: float,
         tau: float,
-        critic_ensemble_size: int,  # N: number of Q-networks in ensemble
-        critic_subsample_size: int,  # M: number of networks to sample for min
+        ensemble_size: int,  # N: number of Q-networks in ensemble
+        subsample_size: int,  # M: number of networks to sample for min
     ) -> Self:
         assert (
-            critic_subsample_size <= critic_ensemble_size
-        ), "critic_subsample_size must be <= critic_ensemble_size"
+            subsample_size <= ensemble_size
+        ), "subsample_size must be <= ensemble_size"
 
         critic = DiscreteCritic(network=network, output_dim=action_dim)
 
@@ -47,7 +47,7 @@ class DQN(BaseModel):
         def init_single(rng):
             return critic.init(rng, observation_sample, training=False, rng=rng)
 
-        rng, *init_rngs = jax.random.split(rng, critic_ensemble_size + 1)
+        rng, *init_rngs = jax.random.split(rng, ensemble_size + 1)
         init_rngs = jnp.stack(init_rngs)
 
         # vmap over initialization to get N parameter sets
@@ -63,8 +63,8 @@ class DQN(BaseModel):
             config=dict(
                 gamma=gamma,
                 tau=tau,
-                critic_ensemble_size=critic_ensemble_size,
-                critic_subsample_size=critic_subsample_size,
+                critic_ensemble_size=ensemble_size,
+                critic_subsample_size=subsample_size,
             ),
         )
 
@@ -80,16 +80,16 @@ class DQN(BaseModel):
         chex.assert_shape(rewards, (batch_size,))
         chex.assert_shape(dones, (batch_size,))
 
-        critic_ensemble_size = self.config["critic_ensemble_size"]
-        critic_subsample_size = self.config["critic_subsample_size"]
+        ensemble_size = self.config["ensemble_size"]
+        subsample_size = self.config["subsample_size"]
 
         subset_rng, new_rng = jax.random.split(rng, 2)
 
         # Randomly sample M indices from N critics
         subset_indices = jax.random.choice(
             subset_rng,
-            critic_ensemble_size,
-            shape=(critic_subsample_size,),
+            ensemble_size,
+            shape=(subsample_size,),
             replace=False,
         )
 
@@ -132,8 +132,8 @@ class DQN(BaseModel):
         compute_grads = jax.value_and_grad(compute_loss, has_aux=True)
         (all_losses, all_q_preds), grads = jax.vmap(compute_grads)(self.state.params)
 
-        chex.assert_shape(all_losses, (critic_ensemble_size,))
-        chex.assert_shape(all_q_preds, (critic_ensemble_size, batch_size))
+        chex.assert_shape(all_losses, (ensemble_size,))
+        chex.assert_shape(all_q_preds, (ensemble_size, batch_size))
 
         new_state = self.state.apply_gradients(grads=grads)
 

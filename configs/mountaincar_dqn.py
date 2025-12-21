@@ -68,8 +68,8 @@ class Config:
             ),
             gamma=self.discount_factor,
             tau=0.005,
-            critic_ensemble_size=10,
-            critic_subsample_size=2,
+            ensemble_size=10,
+            subsample_size=2,
         )
 
         return agent

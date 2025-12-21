@@ -22,8 +22,7 @@ class TrainState(TrainState):
 
 class Actor(flax.struct.PyTreeNode):
     state: TrainState
-    action_scale: float
-    action_bias: float
+    config: dict = flax.struct.field(pytree_node=False)
 
     @classmethod
     def create(
@@ -33,6 +32,8 @@ class Actor(flax.struct.PyTreeNode):
         observation_sample: Array,
         action_space: gym.Space,
         optimizer: optax.GradientTransformation,
+        # hyperparameters
+        tau: float,
     ) -> "Actor":
         action_dim = action_space.shape[0]
         high = action_space.high
@@ -48,50 +49,56 @@ class Actor(flax.struct.PyTreeNode):
         )
         return cls(
             state=state,
-            action_scale=action_scale,
-            action_bias=action_bias,
+            config=dict(
+                tau=tau,
+                action_scale=action_scale,
+                action_bias=action_bias,
+            ),
         )
 
+    @jax.jit
+    def predict(
+        self,
+        observations: Array,
+        rng: jax.Array,
+        params: flax.core.FrozenDict | None = None,
+    ) -> Array:
+        params = params or self.state.params
+        return self.state.apply_fn(params, observations, training=False, rng=rng)
+
+    @jax.jit
     def update(
         self, critic: "Critic", batch: Batch, rng: jax.Array
     ) -> Tuple["Actor", float]:
         observations = batch["observation"][:, 0]
-        
 
         def actor_loss_fn(actor_params):
             actor_actions = self.state.apply_fn(
                 actor_params, observations, training=True, rng=rng
             )
+            q_median = critic.predict(observations, actor_actions, rng)
+            return -jnp.mean(q_median), q_median
 
-            # Use critic to evaluate actions
-            def compute_q(params):
-                return critic.state.apply_fn(
-                    params, observations, actor_actions, training=False, rng=rng
-                )
-
-            # vmap over ensemble
-            all_q_values = jax.vmap(compute_q)(critic.state.params)
-            all_q_values = all_q_values.squeeze(-1)
-
-            # Take median across ensemble
-            q_median = jnp.median(all_q_values, axis=0)
-            return -jnp.mean(q_median)
-
-        grad_fn = jax.value_and_grad(actor_loss_fn)
-        (loss), grads = grad_fn(self.state.params)
+        grad_fn = jax.value_and_grad(actor_loss_fn, has_aux=True)
+        (loss, q_median), grads = grad_fn(self.state.params)
         new_state = self.state.apply_gradients(grads=grads)
 
-        return self.replace(state=new_state), loss
-
-    def soft_update(self, tau: float) -> "Actor":
         new_target_params = optax.incremental_update(
-            self.state.params, self.state.target_params, tau
+            new_state.params, self.state.target_params, self.config["tau"]
         )
-        return self.replace(state=self.state.replace(target_params=new_target_params))
+        new_state = new_state.replace(target_params=new_target_params)
+
+        info = {
+            "actor_loss": loss,
+            "actor_predicted_q": q_median,
+            "actor_grad_norm": optax.global_norm(grads),
+        }
+        return self.replace(state=new_state), info
 
 
 class Critic(flax.struct.PyTreeNode):
     state: TrainState
+    config: dict = flax.struct.field(pytree_node=False)
 
     @classmethod
     def create(
@@ -101,9 +108,24 @@ class Critic(flax.struct.PyTreeNode):
         observation_sample: Array,
         action_space: gym.Space,
         optimizer: optax.GradientTransformation,
+        # hyperparameters
+        gamma: float,
+        tau: float,
         ensemble_size: int,
+        subsample_size: int,
+        policy_noise: float,
+        noise_clip: float,
     ) -> "Critic":
+        assert (
+            subsample_size <= ensemble_size
+        ), "subsample_size must be <= ensemble_size"
+
         action_dim = action_space.shape[0]
+        high = action_space.high
+        low = action_space.low
+        action_scale = (high - low) / 2.0
+        action_bias = (high + low) / 2.0
+
         critic_def = ContinuousCritic(network=network)
 
         def init_critic(rng):
@@ -121,59 +143,89 @@ class Critic(flax.struct.PyTreeNode):
         state = TrainState.create(
             apply_fn=critic_def.apply, params=params, tx=optimizer, target_params=params
         )
-        return cls(state=state)
+        return cls(
+            state=state,
+            config=dict(
+                gamma=gamma,
+                tau=tau,
+                ensemble_size=ensemble_size,
+                subsample_size=subsample_size,
+                policy_noise=policy_noise,
+                noise_clip=noise_clip,
+                action_dim=action_dim,
+                action_scale=action_scale,
+                action_bias=action_bias,
+            ),
+        )
 
+    @jax.jit
+    def predict(
+        self,
+        observations: Array,
+        actions: Array,
+        rng: jax.Array,
+        params: flax.core.FrozenDict | None = None,
+    ) -> Array:
+        if params is None:
+            q_values = jax.vmap(
+                lambda p: self.state.apply_fn(
+                    p, observations, actions, training=False, rng=rng
+                )
+            )(self.state.params)
+            return jnp.median(q_values, axis=0)
+
+        return self.state.apply_fn(
+            params, observations, actions, training=False, rng=rng
+        )
+
+    @jax.jit
     def update(
-        self, actor: Actor, batch: Batch, rng: jax.Array, config: dict
+        self, actor: Actor, batch: Batch, rng: jax.Array
     ) -> Tuple["Critic", dict]:
         observations = batch["observation"][:, 0]
         next_observations = batch["observation"][:, 1]
         actions = batch["action"][:, 0]
         # Normalize actions
-        actions = (actions - actor.action_bias) / actor.action_scale
+        actions = (actions - self.config["action_bias"]) / self.config["action_scale"]
         rewards = batch["reward"][:, 0]
         dones = batch["done"][:, 0]
         batch_size = rewards.shape[0]
 
-        rng, noise_rng, subset_rng = jax.random.split(rng, 3)
+        rng, noise_rng, subset_rng, actor_rng, loss_rng = jax.random.split(rng, 5)
 
         # -----------------------
         # Compute Target Q
         # -----------------------
-        next_actions = actor.state.apply_fn(
-            actor.state.target_params, next_observations, training=False, rng=rng
-        )
+        next_actions = actor.predict(next_observations, actor_rng)
 
         # Add noise to target actions
         noise = (
-            jax.random.normal(noise_rng, (batch_size, config["action_dim"]))
-            * config["policy_noise"]
+            jax.random.normal(noise_rng, (batch_size, self.config["action_dim"]))
+            * self.config["policy_noise"]
         )
-        noise = jnp.clip(noise, -config["noise_clip"], config["noise_clip"])
+        noise = jnp.clip(noise, -self.config["noise_clip"], self.config["noise_clip"])
         next_actions = jnp.clip(next_actions + noise, -1.0, 1.0)
 
         # Randomly sample subset of critics
-        critic_subsample_size = config["critic_subsample_size"]
+        subsample_size = self.config["subsample_size"]
         subset_indices = jax.random.choice(
             subset_rng,
-            config["critic_ensemble_size"],
-            shape=(critic_subsample_size,),
+            self.config["ensemble_size"],
+            shape=(subsample_size,),
             replace=False,
         )
-
-        def compute_target_q(params):
-            return self.state.apply_fn(
-                params, next_observations, next_actions, training=False, rng=rng
-            )
 
         sampled_target_params = jax.tree.map(
             lambda x: x[subset_indices], self.state.target_params
         )
-        sampled_target_q = jax.vmap(compute_target_q)(sampled_target_params)
-        chex.assert_shape(sampled_target_q, (critic_subsample_size, batch_size, 1))
+        sampled_target_q = jax.vmap(self.predict, in_axes=(None, None, None, 0))(
+            next_observations, next_actions, rng, sampled_target_params
+        )
+        chex.assert_shape(sampled_target_q, (subsample_size, batch_size, 1))
 
         target_Q = jnp.min(sampled_target_q, axis=0).squeeze(-1)
-        target_Q = rewards + (1 - dones) * config["gamma"] * target_Q
+        target_Q = rewards + (1 - dones) * self.config["gamma"] * target_Q
+        chex.assert_shape(target_Q, (batch_size,))
 
         # -----------------------
         # Update Critic
@@ -181,7 +233,7 @@ class Critic(flax.struct.PyTreeNode):
         def critic_loss_fn(critic_params):
             def compute_current_q(params):
                 return self.state.apply_fn(
-                    params, observations, actions, training=True, rng=rng
+                    params, observations, actions, training=True, rng=loss_rng
                 )
 
             current_Q = jax.vmap(compute_current_q)(critic_params)
@@ -194,6 +246,12 @@ class Critic(flax.struct.PyTreeNode):
         (loss, current_Q), grads = grad_fn(self.state.params)
         new_state = self.state.apply_gradients(grads=grads)
 
+        # Update target params with polyak averaging
+        new_target_params = optax.incremental_update(
+            new_state.params, self.state.target_params, self.config["tau"]
+        )
+        new_state = new_state.replace(target_params=new_target_params)
+
         info = {
             "critic_loss": loss,
             "q_values": current_Q,
@@ -202,22 +260,16 @@ class Critic(flax.struct.PyTreeNode):
         }
         return self.replace(state=new_state), info
 
-    def soft_update(self, tau: float) -> "Critic":
-        new_target_params = optax.incremental_update(
-            self.state.params, self.state.target_params, tau
-        )
-        return self.replace(state=self.state.replace(target_params=new_target_params))
-
 
 class TD3TrainState(flax.struct.PyTreeNode):
     actor: Actor
     critic: Critic
-    step: int = 0
 
 
 class TD3(BaseModel):
     state: TD3TrainState
-    config: dict = flax.struct.field(pytree_node=False)
+    policy_freq: int
+    step: int = 0
 
     @classmethod
     def create(
@@ -229,19 +281,16 @@ class TD3(BaseModel):
         critic_network: nn.Module,
         actor_optimizer: optax.GradientTransformation,
         critic_optimizer: optax.GradientTransformation,
-        
         # hyperparameters
         gamma: float,
         tau: float,
         policy_noise: float,
         noise_clip: float,
-        policy_freq: int,
         exploration_noise: float,
         critic_ensemble_size: int,
         critic_subsample_size: int,
+        policy_freq: int,
     ) -> Self:
-        action_dim = action_space.shape[0]
-
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
 
         actor = Actor.create(
@@ -250,6 +299,7 @@ class TD3(BaseModel):
             observation_sample=observation_sample,
             action_space=action_space,
             optimizer=actor_optimizer,
+            tau=tau,
         )
 
         critic = Critic.create(
@@ -258,7 +308,12 @@ class TD3(BaseModel):
             observation_sample=observation_sample,
             action_space=action_space,
             optimizer=critic_optimizer,
+            gamma=gamma,
+            tau=tau,
             ensemble_size=critic_ensemble_size,
+            subsample_size=critic_subsample_size,
+            policy_noise=policy_noise,
+            noise_clip=noise_clip,
         )
 
         return cls(
@@ -266,53 +321,28 @@ class TD3(BaseModel):
                 actor=actor,
                 critic=critic,
             ),
-            config=dict(
-                gamma=gamma,
-                tau=tau,
-                policy_noise=policy_noise,
-                noise_clip=noise_clip,
-                policy_freq=policy_freq,
-                exploration_noise=exploration_noise,
-                action_dim=action_dim,
-                critic_ensemble_size=critic_ensemble_size,
-                critic_subsample_size=critic_subsample_size,
-                action_bias=actor.action_bias,
-                action_scale=actor.action_scale,
-            ),
+            policy_freq=policy_freq,
+            step=0,
         )
 
-    @jax.jit
     def update(self: Self, batch: Batch, rng: jax.Array) -> Tuple[Self, dict]:
         new_critic, critic_info = self.state.critic.update(
-            actor=self.state.actor, batch=batch, rng=rng, config=self.config
+            actor=self.state.actor, batch=batch, rng=rng
         )
-
-        # Soft update critic targets
-        new_critic = new_critic.soft_update(self.config["tau"])
-
-        should_update_actor = (self.state.step + 1) % self.config["policy_freq"] == 0
-
-        def update_actor_step():
-            new_actor, actor_loss = self.state.actor.update(new_critic, batch, rng)
-            new_actor = new_actor.soft_update(self.config["tau"])
-            return new_actor, actor_loss
-
-        new_actor, actor_loss = jax.lax.cond(
-            should_update_actor, update_actor_step, lambda: (self.state.actor, 0.0)
-        )
-
-        info = {**critic_info, "actor_loss": actor_loss}
-
-        new_state = self.state.replace(
-            actor=new_actor, critic=new_critic, step=self.state.step + 1
-        )
-
-        return self.replace(state=new_state), info
+        if self.step % self.policy_freq == 0:
+            new_actor, actor_info = self.state.actor.update(new_critic, batch, rng)
+            info = {**critic_info, **actor_info}
+            new_state = self.state.replace(actor=new_actor, critic=new_critic)
+            return self.replace(state=new_state, step=self.step + 1), info
+        else:
+            new_state = self.state.replace(critic=new_critic)
+            return self.replace(state=new_state, step=self.step + 1), critic_info
 
     @jax.jit
     def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
-        actions = self.state.actor.state.apply_fn(
-            self.state.actor.state.params, observations, training=False, rng=rng
+        actions = self.state.actor.predict(observations, rng)
+        # Scale actions to environment space
+        return (
+            actions * self.state.actor.config["action_scale"]
+            + self.state.actor.config["action_bias"]
         )
-        actions = actions * self.state.actor.action_scale + self.state.actor.action_bias
-        return actions
