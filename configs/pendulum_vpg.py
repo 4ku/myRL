@@ -59,6 +59,8 @@ class Config:
             ),
             gamma=self.discount_factor,
             ent_coef=0.02,
+            log_std_min=-20.0,
+            log_std_max=2.0,
         )
 
         return agent

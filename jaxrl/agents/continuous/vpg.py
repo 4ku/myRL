@@ -30,13 +30,20 @@ class VPG(BaseModel):
         optimizer: optax.GradientTransformation,
         # hyperparameters
         gamma: float,
-        ent_coef: float = 0.0,
+        ent_coef: float,
+        log_std_min: float,
+        log_std_max: float,
     ) -> Self:
         action_dim = action_space.shape[0]
-        actor = GaussianActor(network=network, action_dim=action_dim, log_std_min=-5.0)
+        actor = GaussianActor(
+            network=network,
+            action_dim=action_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+        )
 
         rng, init_rng = jax.random.split(rng)
-        params = actor.init(init_rng, observation_sample, training=False, rng=init_rng)
+        params = actor.init(init_rng, observation_sample, training=True, rng=init_rng)
 
         # Action bounding
         high = action_space.high
@@ -65,7 +72,7 @@ class VPG(BaseModel):
         observations = batch["observation"][:, 0]
         actions = batch["action"][:, 0]
         returns = batch["return"][:, 0]
-        
+
         # Normalize returns
         returns = (returns - jnp.mean(returns)) / (jnp.std(returns) + 1e-8)
 
@@ -101,15 +108,15 @@ class VPG(BaseModel):
             # 1 - tanh(u)^2 = 1 - normalized_action^2
             log_det_jacobian = jnp.sum(
                 jnp.log(action_scale) + jnp.log(1 - jnp.square(normalized_action)),
-                axis=-1
+                axis=-1,
             )
 
             log_probs = log_prob_raw - log_det_jacobian
 
             entropy = -jnp.mean(log_probs)
-            
+
             loss = -jnp.mean(log_probs * returns) - self.config["ent_coef"] * entropy
-            
+
             return loss, (log_probs, entropy)
 
         grad_fn = jax.value_and_grad(compute_loss, has_aux=True)
@@ -137,6 +144,9 @@ class VPG(BaseModel):
         std = jnp.exp(log_std)
         raw_actions = mean + std * jax.random.normal(rng, shape=mean.shape)
 
-        actions = jnp.tanh(raw_actions) * self.config["action_scale"] + self.config["action_bias"]
+        actions = (
+            jnp.tanh(raw_actions) * self.config["action_scale"]
+            + self.config["action_bias"]
+        )
 
         return actions

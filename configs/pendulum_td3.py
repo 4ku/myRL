@@ -12,11 +12,11 @@ from jaxrl.agents.continuous.td3 import TD3
 class Config:
     seed: int = 1
     discount_factor: float = 0.99
-    total_timesteps: int = 100_000
+    total_timesteps: int = 3_000_000
     buffer_size: int = 100_000
     batch_size: int = 256
     utd_ratio: int = 1
-    checkpoint_period: int = 10_000
+    checkpoint_period: int = 100_000
     on_policy: bool = False
     
     # Exploration
@@ -27,7 +27,7 @@ class Config:
     exploration_fraction: float = 0.1
     
     # Evaluation
-    eval_every: int = 10_000
+    eval_every: int = 50_000
     eval_episodes: int = 5
 
     def get_environment(self) -> gym.Env:

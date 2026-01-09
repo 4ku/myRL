@@ -42,7 +42,7 @@ class Actor(flax.struct.PyTreeNode):
         action_bias = (high + low) / 2.0
 
         actor_def = DeterministicActor(network=network, action_dim=action_dim)
-        params = actor_def.init(rng, observation_sample, training=False, rng=rng)
+        params = actor_def.init(rng, observation_sample, training=True, rng=rng)
 
         state = TrainState.create(
             apply_fn=actor_def.apply, params=params, tx=optimizer, target_params=params
@@ -121,10 +121,6 @@ class Critic(flax.struct.PyTreeNode):
         ), "subsample_size must be <= ensemble_size"
 
         action_dim = action_space.shape[0]
-        high = action_space.high
-        low = action_space.low
-        action_scale = (high - low) / 2.0
-        action_bias = (high + low) / 2.0
 
         critic_def = ContinuousCritic(network=network)
 
@@ -133,7 +129,7 @@ class Critic(flax.struct.PyTreeNode):
                 rng,
                 observation_sample,
                 jnp.zeros((action_dim,)),
-                training=False,
+                training=True,
                 rng=rng,
             )
 
@@ -153,8 +149,6 @@ class Critic(flax.struct.PyTreeNode):
                 policy_noise=policy_noise,
                 noise_clip=noise_clip,
                 action_dim=action_dim,
-                action_scale=action_scale,
-                action_bias=action_bias,
             ),
         )
 
@@ -186,7 +180,7 @@ class Critic(flax.struct.PyTreeNode):
         next_observations = batch["observation"][:, 1]
         actions = batch["action"][:, 0]
         # Normalize actions
-        actions = (actions - self.config["action_bias"]) / self.config["action_scale"]
+        actions = (actions - actor.config["action_bias"]) / actor.config["action_scale"]
         rewards = batch["reward"][:, 0]
         dones = batch["done"][:, 0]
         batch_size = rewards.shape[0]
