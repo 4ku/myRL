@@ -13,11 +13,13 @@ class Config:
     seed: int = 1
     discount_factor: float = 0.99
     total_timesteps: int = 50_001
-    buffer_size: int = 100_000
     batch_size: int = 1024
     utd_ratio: int = 8
     checkpoint_period: int = 10_000
     on_policy: bool = False
+    
+    buffer_size: int = 100_000
+    buffer_sequence_length: int = 2
 
     # Exploration
     start_e: float = 1.0

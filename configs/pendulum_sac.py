@@ -13,12 +13,14 @@ class Config:
     seed: int = 1
     discount_factor: float = 0.99
     total_timesteps: int = 150_000
-    buffer_size: int = 100_000
     batch_size: int = 256
     utd_ratio: int = 1
     checkpoint_period: int = 100_000
     on_policy: bool = False
     
+    buffer_size: int = 100_000
+    buffer_sequence_length: int = 2
+
     # Exploration
     # SAC does exploration via entropy, but we might keep these for consistency 
     # though they are unused by SAC (it uses alpha).

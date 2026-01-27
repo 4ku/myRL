@@ -8,7 +8,7 @@ import numpy as np
 import chex
 import flax.linen as nn
 
-from jaxrl.networks.actor_critic_nets import DiscreteCritic
+from jaxrl.networks.actor_critic_nets import DiscreteQFunction
 from jaxrl.agents.base_model import BaseModel
 
 Array = Union[np.ndarray, jnp.ndarray]
@@ -41,7 +41,7 @@ class DQN(BaseModel):
             subsample_size <= ensemble_size
         ), "subsample_size must be <= ensemble_size"
 
-        critic = DiscreteCritic(network=network, output_dim=action_dim)
+        critic = DiscreteQFunction(network=network, output_dim=action_dim)
 
         # Initialize N separate sets of parameters
         def init_single(rng):
@@ -80,8 +80,8 @@ class DQN(BaseModel):
         chex.assert_shape(rewards, (batch_size,))
         chex.assert_shape(dones, (batch_size,))
 
-        ensemble_size = self.config["ensemble_size"]
-        subsample_size = self.config["subsample_size"]
+        ensemble_size = self.config["critic_ensemble_size"]
+        subsample_size = self.config["critic_subsample_size"]
 
         subset_rng, new_rng = jax.random.split(rng, 2)
 
@@ -151,11 +151,13 @@ class DQN(BaseModel):
         return self.replace(state=new_state), info
 
     @jax.jit
-    def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
+    def sample_actions(
+        self: Self, observations: Array, rng: jax.Array, argmax: bool
+    ) -> Tuple[Array, Array]:
         # Use median Q-values across ensemble for action selection
         def compute_q(params):
             return self.state.apply_fn(params, observations, training=False, rng=rng)
 
         all_q = jax.vmap(compute_q)(self.state.params)  # (N, batch_size, action_dim)
         median_q = jnp.median(all_q, axis=0)  # (batch_size, action_dim)
-        return jnp.argmax(median_q, axis=-1)
+        return jnp.argmax(median_q, axis=-1), None

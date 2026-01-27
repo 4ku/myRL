@@ -4,10 +4,10 @@ import importlib
 import random
 import jax
 import numpy as np
-import optax
 import orbax.checkpoint as ocp
 
 from jaxrl.agents.base_model import BaseModel
+
 
 def evaluate(env, agent, num_episodes=5, seed=1):
     infos = []
@@ -19,7 +19,7 @@ def evaluate(env, agent, num_episodes=5, seed=1):
         total_reward = 0
         while not done and not truncated:
             rng, action_rng = jax.random.split(rng)
-            action = agent.sample_actions(obs, action_rng)
+            action, log_prob = agent.sample_actions(obs, action_rng, argmax=True)
             action = jax.device_get(action)
             next_obs, reward, done, truncated, info = env.step(action)
             total_reward += reward
@@ -72,7 +72,7 @@ def main(args):
     env = config.get_eval_environment(f"{video_path}/eval_videos/{args.checkpoint_step}")
 
     # Create agent
-    agent = config.get_agent(
+    agent: BaseModel = config.get_agent(
         rng=rng,
         observation_space=env.observation_space,
         action_space=env.action_space,
@@ -86,7 +86,7 @@ def main(args):
         agent.state,
     )
     restored_state = checkpointer.restore(checkpoint_path, item=agent.state, restore_args=restore_args)
-    agent = agent.replace(state=restored_state)
+    agent: BaseModel = agent.replace(state=restored_state)
 
     # Evaluate agent
     evaluate(env, agent, num_episodes=args.eval_episodes, seed=args.seed)

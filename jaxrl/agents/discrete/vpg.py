@@ -7,6 +7,7 @@ from flax.training.train_state import TrainState
 import numpy as np
 import flax.linen as nn
 import chex
+from functools import partial
 
 from jaxrl.agents.base_model import BaseModel
 from jaxrl.networks.actor_critic_nets import DiscreteActor
@@ -59,9 +60,7 @@ class VPG(BaseModel):
         chex.assert_shape(returns, (batch_size,))
 
         def compute_loss(params):
-            logits = self.state.apply_fn(
-                params, observations, training=True, rng=rng
-            )
+            logits = self.state.apply_fn(params, observations, training=True, rng=rng)
             log_probs_all = jax.nn.log_softmax(logits)
             # Select log probability of the taken action
             log_probs = jnp.take_along_axis(
@@ -85,10 +84,23 @@ class VPG(BaseModel):
 
         return self.replace(state=new_state), info
 
-    @jax.jit
-    def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
+    @partial(jax.jit, static_argnames=("argmax",))
+    def sample_actions(
+        self: Self,
+        observations: Array,
+        rng: jax.Array,
+        argmax: bool,
+    ) -> Tuple[Array, Array]:
         logits = self.state.apply_fn(
             self.state.params, observations, training=False, rng=rng
         )
-        actions = jax.random.categorical(rng, logits)
-        return actions
+        if argmax:
+            actions = jnp.argmax(logits, axis=-1)
+        else:
+            actions = jax.random.categorical(rng, logits)
+
+        log_probs_all = jax.nn.log_softmax(logits)
+        log_probs = jnp.take_along_axis(
+            log_probs_all, actions[..., None], axis=-1
+        ).squeeze(-1)
+        return actions, log_probs

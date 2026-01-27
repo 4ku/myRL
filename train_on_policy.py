@@ -19,6 +19,8 @@ def main(args):
     # Dynamically import config module
     config_module = importlib.import_module(f"configs.{args.config}")
     config = config_module.Config()
+    if not config.on_policy:
+        raise ValueError("Use train_off_policy.py for off-policy configs.")
 
     # Seeding
     random.seed(config.seed)
@@ -41,9 +43,9 @@ def main(args):
         "reward": 0.0,
         "done": False,
         "truncated": False,
+        "log_prob": 0.0,
         "return": 0.0,
     }
-    # Create replay buffer
     replay_buffer = ReplayBuffer(
         example_transition=example_transition,
         capacity=config.buffer_size,
@@ -67,24 +69,14 @@ def main(args):
     # Training loop
     obs, _ = env.reset(seed=config.seed)
     episode_transitions = []
-    
+    sequence_length = config.buffer_sequence_length
+
     for global_step in tqdm(range(config.total_timesteps), desc="Training"):
-
-        # Get epsilon from linear schedule
-        slope = (config.end_e - config.start_e) / (
-            config.exploration_fraction * config.total_timesteps
-        )
-        epsilon = max(slope * global_step + config.start_e, config.end_e)
-        writer.add_scalar("charts/epsilon", epsilon, global_step)
-
         # Sample action
         rng, _ = jax.random.split(rng)
-        action = (
-            agent.sample_actions(obs, rng)
-            if random.random() > epsilon
-            else env.action_space.sample()
-        )
+        action, action_log_prob = agent.sample_actions(obs, rng, argmax=False)
         action = jax.device_get(action)
+        action_log_prob = jax.device_get(action_log_prob)
 
         # Execute environment step
         next_obs, reward, done, truncated, infos = env.step(action)
@@ -95,35 +87,35 @@ def main(args):
             "reward": reward,
             "done": done,
             "truncated": truncated,
+            "log_prob": action_log_prob,
         }
         episode_transitions.append(transition)
         obs = next_obs
 
         if done or truncated:
-            episode_transitions = compute_returns(episode_transitions, config.discount_factor)
-            for transition in episode_transitions:
-                replay_buffer.insert(transition)
+            episode_transitions = compute_returns(
+                episode_transitions, config.discount_factor
+            )
+            for t in episode_transitions:
+                replay_buffer.insert(t)
             episode_transitions = []
             log_info(writer, infos, global_step)
             seed = np.random.randint(0, 2**31 - 1)
             obs, _ = env.reset(seed=seed)
 
         # Update agent
-        if replay_buffer.size >= config.batch_size:
+        required = config.batch_size + sequence_length - 1
+        if replay_buffer.size >= required:
             agent_info = {}
-            if config.on_policy:
-                while replay_buffer.size >= config.batch_size:
-                    data = replay_buffer.sample(config.batch_size, sequence_length=2, sample_latest=True)
-                    for _ in range(config.utd_ratio):
-                        agent, agent_info = agent.update(data, rng)
-                        rng, _ = jax.random.split(rng)
-                replay_buffer.clear()
-            else:
-                for _ in range(config.utd_ratio):
-                    data = replay_buffer.sample(config.batch_size, sequence_length=2, sample_latest=False)
-                    agent, agent_info = agent.update(data, rng)
-                    rng, _ = jax.random.split(rng)
-
+            while replay_buffer.size >= required:
+                batch = replay_buffer.sample(
+                    batch_size=config.batch_size,
+                    sequence_length=sequence_length,
+                    pop=True,
+                )
+                batch = jax.device_put(batch)
+                agent, agent_info = agent.update(batch, rng)
+                rng, _ = jax.random.split(rng)
             log_info(writer, agent_info, global_step)
 
         # Save checkpoint
@@ -137,7 +129,9 @@ def main(args):
         if global_step % config.eval_every == 0:
             video_folder = f"{experiment_folder}/eval_videos/{global_step}"
             eval_env = config.get_eval_environment(video_folder)
-            eval_infos = evaluate(eval_env, agent, num_episodes=config.eval_episodes, seed=config.seed)
+            eval_infos = evaluate(
+                eval_env, agent, num_episodes=config.eval_episodes, seed=config.seed
+            )
             log_info(writer, eval_infos, global_step)
 
     # Wait for any pending checkpoint saves to complete
@@ -145,12 +139,12 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train RL agent")
+    parser = argparse.ArgumentParser(description="Train RL agent (on-policy)")
     parser.add_argument(
         "--config",
         type=str,
         default="pendulum_vpg",
-        help="Config module name from configs folder (e.g., cartpole_dqn)",
+        help="Config module name from configs folder (e.g., cartpole_vpg)",
     )
     args = parser.parse_args()
     main(args)

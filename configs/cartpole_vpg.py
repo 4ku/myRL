@@ -13,17 +13,13 @@ class Config:
     seed: int = 1
     discount_factor: float = 0.99
     total_timesteps: int = 1_000_001
-    buffer_size: int = 1_000
     batch_size: int = 128
-    utd_ratio: int = 2
     checkpoint_period: int = 50_000
     on_policy: bool = True
     
-    # Exploration
-    start_e: float = 0.0
-    end_e: float = 0.0
-    exploration_fraction: float = 0.01
-    
+    buffer_size: int = 1_000
+    buffer_sequence_length: int = 1
+
     # Evaluation
     eval_every: int = 25_000
     eval_episodes: int = 5
@@ -48,7 +44,7 @@ class Config:
             observation_sample=observation_space.sample(),
             action_dim=action_space.n,
             optimizer=optax.chain(
-                optax.clip_by_global_norm(50.0),
+                optax.clip_by_global_norm(10.0),
                 optax.adam(learning_rate=5e-4),
             ),
             network=MLP(

@@ -43,7 +43,7 @@ class DeterministicActor(nn.Module):
         return nn.tanh(x)
 
 
-class DiscreteCritic(nn.Module):
+class DiscreteQFunction(nn.Module):
     network: nn.Module
     output_dim: int
 
@@ -53,7 +53,7 @@ class DiscreteCritic(nn.Module):
         return nn.Dense(self.output_dim)(x)
 
 
-class ContinuousCritic(nn.Module):
+class ContinuousQFunction(nn.Module):
     network: nn.Module
 
     @nn.compact
@@ -62,4 +62,13 @@ class ContinuousCritic(nn.Module):
     ) -> jnp.ndarray:
         x = jnp.concatenate([obs, action], axis=-1)
         x = self.network(x, training=training, rng=rng)
+        return nn.Dense(1)(x)
+
+
+class ValueFunction(nn.Module):
+    network: nn.Module
+
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray, training: bool, rng: jax.Array) -> jnp.ndarray:
+        x = self.network(obs, training=training, rng=rng)
         return nn.Dense(1)(x)

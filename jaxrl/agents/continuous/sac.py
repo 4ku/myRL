@@ -8,9 +8,10 @@ import numpy as np
 import flax.linen as nn
 import gymnasium as gym
 import chex
+from functools import partial
 
 from jaxrl.agents.base_model import BaseModel
-from jaxrl.networks.actor_critic_nets import ContinuousCritic, GaussianActor
+from jaxrl.networks.actor_critic_nets import ContinuousQFunction, GaussianActor
 
 Array = Union[np.ndarray, jnp.ndarray]
 Batch = Dict[str, Array]
@@ -101,32 +102,20 @@ class Actor(flax.struct.PyTreeNode):
             ),
         )
 
-    @jax.jit
-    def sample_actions(self, observations: Array, rng: jax.Array) -> Array:
-        mean, log_std = self.state.apply_fn(
-            self.state.params, observations, training=False, rng=rng
-        )
-        std = jnp.exp(log_std)
-        noise = jax.random.normal(rng, mean.shape)
-        actions = jnp.tanh(mean + std * noise)
-
-        action_scale = self.config["action_scale"]
-        action_bias = self.config["action_bias"]
-        return (actions * action_scale) + action_bias
-
-    @jax.jit
+    @partial(jax.jit, static_argnames=("argmax",))
     def predict(
         self,
         observations: Array,
         rng: jax.Array,
         params: flax.core.FrozenDict | None = None,
-        mode: bool = False,
+        argmax: bool = False,
     ) -> Tuple[Array, Array]:
         params = params or self.state.params
         mean, log_std = self.state.apply_fn(
             params, observations, training=False, rng=rng
         )
-        std = jnp.exp(log_std) if not mode else 0.0
+
+        std = 0.0 if argmax else jnp.exp(log_std)
 
         noise = jax.random.normal(rng, mean.shape)
         u = mean + std * noise
@@ -158,7 +147,9 @@ class Actor(flax.struct.PyTreeNode):
             actions, log_probs = self.predict(observations, rng, params=actor_params)
 
             # Get Q values
-            q_values = critic.predict(observations, actions, rng)  # Shape: (ensemble, batch)
+            q_values = critic.predict(
+                observations, actions, rng
+            )  # Shape: (ensemble, batch)
             chex.assert_shape(
                 q_values,
                 (critic.config["ensemble_size"], batch["observation"].shape[0]),
@@ -205,7 +196,7 @@ class Critic(flax.struct.PyTreeNode):
             subsample_size <= ensemble_size
         ), "subsample_size must be <= ensemble_size"
 
-        critic_def = ContinuousCritic(network=network)
+        critic_def = ContinuousQFunction(network=network)
 
         def init_critic(rng):
             return critic_def.init(
@@ -415,6 +406,14 @@ class SAC(BaseModel):
 
         return self.replace(state=new_state), info
 
-    @jax.jit
-    def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
-        return self.state.actor.sample_actions(observations, rng)
+    @partial(jax.jit, static_argnames=("argmax",))
+    def sample_actions(
+        self: Self, observations: Array, rng: jax.Array, argmax: bool
+    ) -> Tuple[Array, Array]:
+        actions, log_probs = self.state.actor.predict(observations, rng, argmax=argmax)
+        # Scale normalized actions [-1, 1] to the environment action space.
+        actions = (
+            actions * self.state.actor.config["action_scale"]
+            + self.state.actor.config["action_bias"]
+        )
+        return actions, log_probs

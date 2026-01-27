@@ -79,67 +79,52 @@ class ReplayBuffer:
         self._size = min(self._size + 1, self._capacity)
 
     def sample(
-        self, 
-        batch_size: int, 
+        self,
+        batch_size: int,
         sequence_length: int,
-        sample_latest: bool,
+        pop: bool,
     ) -> FrozenDict:
         """Sample sequences of consecutive transitions.
 
         Args:
             batch_size: Number of sequences to sample
             sequence_length: Length of each sequence
-            sample_latest: If True, samples the most recently added sequences 
-                          and updates the buffer state to remove the sampled data.
+            pop: Whether to remove the sampled sequences from the buffer
 
         Returns:
             FrozenDict with shape (batch_size, sequence_length, ...) for each field.
-            If sequence_length=1, the shape is (batch_size, ...).
+            (i.e., always includes a time dimension, even when sequence_length=1).
         """
         if sequence_length <= 0:
             raise ValueError("sequence_length must be >= 1")
         if batch_size <= 0:
             raise ValueError("batch_size must be >= 1")
-        if self._size < sequence_length:
-            raise RuntimeError(
-                f"Not enough data to sample sequences of length {sequence_length} (size={self._size})."
-            )
 
-        # Sample valid logical starting indices.
-        # Logical index 0 corresponds to the oldest element in the buffer (at self._insert_index if full).
-        # There are (size - sequence_length + 1) valid sequences in total.
-        num_valid_sequences = self.size - sequence_length + 1
-        
-        if sample_latest:
-            if num_valid_sequences < batch_size:
-                 raise RuntimeError(
-                     f"Not enough valid sequences ({num_valid_sequences}) to sample {batch_size} latest sequences."
-                 )
-            # Select the last 'batch_size' logical indices
-            logical_idxs = np.arange(num_valid_sequences - batch_size, num_valid_sequences)
+        if pop:
+            # Oldest-first (FIFO) sampling that consumes `batch_size` transitions.
+            required = batch_size + sequence_length - 1
+            if self._size < required:
+                raise RuntimeError(
+                    f"Not enough data to pop {batch_size} sequences of length {sequence_length} "
+                    f"(need {required}, have {self._size})."
+                )
+            logical_idxs = np.arange(batch_size, dtype=np.int64)
         else:
+            if self._size < sequence_length:
+                raise RuntimeError(
+                    f"Not enough data to sample sequences of length {sequence_length} (size={self._size})."
+                )
+
+            # Sample valid logical starting indices.
+            # Logical index 0 corresponds to the oldest element in the buffer.
+            # There are (size - sequence_length + 1) valid sequences in total.
+            num_valid_sequences = self.size - sequence_length + 1
             logical_idxs = self._rng.randint(num_valid_sequences, size=batch_size)
-        
-        # Map logical indices to physical indices in the circular buffer
-        # If buffer is not full, oldest is at 0.
-        # If buffer is full, oldest is at self._insert_index.
-        start_idx_offset = self._insert_index if self.size == self.capacity else 0
-        idxs = (logical_idxs + start_idx_offset) % self._capacity
 
-        # Update buffer state if sampling latest (consume data)
-        if sample_latest:
-            self._size -= batch_size
-            self._insert_index = (self._insert_index - batch_size) % self._capacity
-
-        if sequence_length == 1:
-
-            def _tree_gather(storage: ArrayTree) -> ArrayTree:
-                if isinstance(storage, dict):
-                    return {k: _tree_gather(v) for k, v in storage.items()}
-                return storage[idxs]
-
-            batch_tree = _tree_gather(self._storage)
-            return FrozenDict(batch_tree)
+        # Map logical indices to physical indices in the circular buffer.
+        # Logical index 0 is always the oldest element.
+        start = (self._insert_index - self._size) % self._capacity
+        idxs = (logical_idxs + start) % self._capacity
 
         # Generate all indices for sequences: (batch_size, sequence_length)
         # Use modulo arithmetic to handle wrapping at the end of the physical buffer
@@ -156,6 +141,8 @@ class ReplayBuffer:
             return gathered.reshape(new_shape)
 
         batch_tree = _tree_gather_and_reshape(self._storage)
+        if pop:
+            self._size -= batch_size
         return FrozenDict(batch_tree)
 
     def get_iterator(
@@ -163,7 +150,7 @@ class ReplayBuffer:
         *,
         queue_size: int = 2,
         device: Optional[Any] = None,
-        sample_kwargs: Optional[Dict[str, Any]] = {},
+        sample_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Iterable[FrozenDict]:
         """Create an infinite iterator that yields batches.
 
@@ -175,6 +162,7 @@ class ReplayBuffer:
         Yields:
             Batches from the replay buffer
         """
+        sample_kwargs = sample_kwargs or {}
         queue = collections.deque()
 
         def enqueue(n: int) -> None:

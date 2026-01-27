@@ -10,7 +10,7 @@ import chex
 import gymnasium as gym
 
 from jaxrl.agents.base_model import BaseModel
-from jaxrl.networks.actor_critic_nets import ContinuousCritic, DeterministicActor
+from jaxrl.networks.actor_critic_nets import ContinuousQFunction, DeterministicActor
 
 Array = Union[np.ndarray, jnp.ndarray]
 Batch = Dict[str, Array]
@@ -122,7 +122,7 @@ class Critic(flax.struct.PyTreeNode):
 
         action_dim = action_space.shape[0]
 
-        critic_def = ContinuousCritic(network=network)
+        critic_def = ContinuousQFunction(network=network)
 
         def init_critic(rng):
             return critic_def.init(
@@ -332,10 +332,12 @@ class TD3(BaseModel):
             return self.replace(state=new_state, step=self.step + 1), critic_info
 
     @jax.jit
-    def sample_actions(self: Self, observations: Array, rng: jax.Array) -> Array:
+    def sample_actions(
+        self: Self, observations: Array, rng: jax.Array, argmax: bool
+    ) -> Tuple[Array, Array]:
         actions = self.state.actor.predict(observations, rng)
         # Scale actions to environment space
         return (
             actions * self.state.actor.config["action_scale"]
             + self.state.actor.config["action_bias"]
-        )
+        ), None

@@ -12,12 +12,14 @@ from jaxrl.agents.discrete.dqn import DQN
 class Config:
     seed: int = 1
     discount_factor: float = 0.99
-    total_timesteps: int = 200_001
-    buffer_size: int = 100_000
+    total_timesteps: int = 100_001
     batch_size: int = 512
     utd_ratio: int = 4
     checkpoint_period: int = 10_000
     on_policy: bool = False
+    
+    buffer_size: int = 100_000
+    buffer_sequence_length: int = 2
 
     # Exploration
     start_e: float = 1.0

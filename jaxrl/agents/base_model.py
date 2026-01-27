@@ -13,5 +13,7 @@ class BaseModel(flax.struct.PyTreeNode):
     def update(self, batch: Batch, rng: jax.Array) -> Tuple[Self, dict]:
         raise NotImplementedError
 
-    def sample_actions(self, observations: Array, rng: jax.Array) -> Array:
+    def sample_actions(
+        self, observations: Array, rng: jax.Array, argmax: bool
+    ) -> Tuple[Array, Array]:
         raise NotImplementedError
